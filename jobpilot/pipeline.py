@@ -66,7 +66,8 @@ async def apply_platforms(
         result = results[-1]
         emit(
             "apply",
-            result.get("error") or result.get("message")
+            result.get("error")
+            or result.get("message")
             or (
                 "Application stage needs attention"
                 if result.get("error")

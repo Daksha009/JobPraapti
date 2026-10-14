@@ -10,7 +10,13 @@ import {
 } from "lucide-react";
 import { Badge, PlatformIcon } from "./components";
 import { dateTime, label, type Run } from "./lib";
-import { applicationOutcomes, duration, progressUnits, runMetrics, stageProgress } from "./progress";
+import {
+  applicationOutcomes,
+  duration,
+  progressUnits,
+  runMetrics,
+  stageProgress,
+} from "./progress";
 
 export function RunProgress({ run, timezone }: { run: Run; timezone: string }) {
   const [now, setNow] = useState(Date.now());
@@ -123,7 +129,9 @@ export function RunProgress({ run, timezone }: { run: Run; timezone: string }) {
                     aria-label={`${label(stage)} items processed`}
                   />
                   <span className="caption">
-                    {count.total === 0 ? "No eligible candidates" : `${count.current} / ${count.total} processed across platforms`}
+                    {count.total === 0
+                      ? "No eligible candidates"
+                      : `${count.current} / ${count.total} processed across platforms`}
                   </span>
                 </>
               )}
@@ -163,18 +171,36 @@ export function RunProgress({ run, timezone }: { run: Run; timezone: string }) {
         </div>
       </div>
       {outcomes.length > 0 && (
-        <section className="application-outcomes" aria-label="Application outcomes">
+        <section
+          className="application-outcomes"
+          aria-label="Application outcomes"
+        >
           <h3>What happened at Apply</h3>
-          <p>Results from this run. A completed match does not mean every job met your application filters.</p>
+          <p>
+            Results from this run. A completed match does not mean every job met
+            your application filters.
+          </p>
           <div>
             {outcomes.map((outcome) => (
               <article key={outcome.platform}>
-                <div><PlatformIcon name={outcome.platform} /><strong>{label(outcome.platform)}</strong><Badge value={outcome.state} /></div>
+                <div>
+                  <PlatformIcon name={outcome.platform} />
+                  <strong>{label(outcome.platform)}</strong>
+                  <Badge value={outcome.state} />
+                </div>
                 <p>{outcome.message}</p>
                 {outcome.eligibility && (
-                  <small>{outcome.eligibility.considered} scored/shortlisted · {outcome.eligibility.below_score} below {outcome.eligibility.min_score} points · {outcome.eligibility.eligible} eligible · {outcome.eligibility.selected} selected</small>
+                  <small>
+                    {outcome.eligibility.considered} scored/shortlisted ·{" "}
+                    {outcome.eligibility.below_score} below{" "}
+                    {outcome.eligibility.min_score} points ·{" "}
+                    {outcome.eligibility.eligible} eligible ·{" "}
+                    {outcome.eligibility.selected} selected
+                  </small>
                 )}
-                {outcome.needsLogin && <a href="#platforms">Verify platform sign-in →</a>}
+                {outcome.needsLogin && (
+                  <a href="#platforms">Verify platform sign-in →</a>
+                )}
               </article>
             ))}
           </div>

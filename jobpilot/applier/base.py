@@ -350,8 +350,12 @@ class BaseApplier:
         """Return candidates and mutually exclusive filter counts for the dashboard."""
         jobs = []
         summary = {
-            "considered": 0, "below_score": 0, "experience_mismatch": 0,
-            "excluded_title": 0, "eligible": 0, "selected": 0,
+            "considered": 0,
+            "below_score": 0,
+            "experience_mismatch": 0,
+            "excluded_title": 0,
+            "eligible": 0,
+            "selected": 0,
             "min_score": self.min_score,
         }
         for status in ("matched", "shortlisted"):
@@ -367,7 +371,9 @@ class BaseApplier:
                     summary["considered"] += 1
                     if job.match_score < self.min_score:
                         summary["below_score"] += 1
-                    elif not job.is_experience_eligible(self.min_experience, self.max_experience)[0]:
+                    elif not job.is_experience_eligible(
+                        self.min_experience, self.max_experience
+                    )[0]:
                         summary["experience_mismatch"] += 1
                     elif any(
                         keyword.lower() in job.title.lower()

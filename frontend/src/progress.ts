@@ -26,13 +26,19 @@ export function runMetrics(run: Run) {
 }
 
 export function stageProgress(units: RunEvent[], stage: string) {
-  const entries = units.filter((unit) => unit.stage === stage && unit.total != null);
+  const entries = units.filter(
+    (unit) => unit.stage === stage && unit.total != null,
+  );
   const global = entries.find((unit) => !unit.platform);
   if (global) return { current: global.current || 0, total: global.total! };
   if (!entries.length) return undefined;
-  return entries.reduce((sum, unit) => ({
-    current: sum.current + (unit.current || 0), total: sum.total + unit.total!,
-  }), { current: 0, total: 0 });
+  return entries.reduce(
+    (sum, unit) => ({
+      current: sum.current + (unit.current || 0),
+      total: sum.total + unit.total!,
+    }),
+    { current: 0, total: 0 },
+  );
 }
 
 type ApplicationResult = {
@@ -47,18 +53,36 @@ type ApplicationResult = {
   selected?: number;
   processed?: number;
   skipped?: number;
-  eligibility?: { considered: number; below_score: number; min_score: number; experience_mismatch: number; excluded_title: number; eligible: number; selected: number };
+  eligibility?: {
+    considered: number;
+    below_score: number;
+    min_score: number;
+    experience_mismatch: number;
+    excluded_title: number;
+    eligible: number;
+    selected: number;
+  };
 };
 
 export function applicationOutcomes(run: Run) {
-  const result = run.result as { applications?: ApplicationResult[] } | ApplicationResult[] | null;
-  const rows = Array.isArray(result) ? (run.action === "apply" ? result : []) : result?.applications || [];
+  const result = run.result as
+    { applications?: ApplicationResult[] } | ApplicationResult[] | null;
+  const rows = Array.isArray(result)
+    ? run.action === "apply"
+      ? result
+      : []
+    : result?.applications || [];
   return rows.map((row) => {
-    const needsLogin = row.blocker === "authentication" || /login required|sign-in could not be verified/i.test(row.error || "");
-    const state = row.error || row.review || row.failed ? "attention" : "completed";
+    const needsLogin =
+      row.blocker === "authentication" ||
+      /login required|sign-in could not be verified/i.test(row.error || "");
+    const state =
+      row.error || row.review || row.failed ? "attention" : "completed";
     const message = needsLogin
       ? "Sign-in was not verified during this run. Open Platforms and verify the session before trying again."
-      : row.error || row.message || `${row.applied || 0} confirmed · ${row.dry_run || 0} dry-run checks · ${row.review || 0} for review · ${row.skipped || 0} skipped`;
+      : row.error ||
+        row.message ||
+        `${row.applied || 0} confirmed · ${row.dry_run || 0} dry-run checks · ${row.review || 0} for review · ${row.skipped || 0} skipped`;
     return { ...row, state, message, needsLogin };
   });
 }
