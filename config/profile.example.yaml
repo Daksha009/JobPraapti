@@ -1,0 +1,118 @@
+# ─────────────────────────────────────────────────────────────
+# JobPraapti Profile Configuration Template
+# Copy this file to config/profile.yaml and fill in your details
+# ─────────────────────────────────────────────────────────────
+
+personal:
+  full_name: "Your Name"
+  email: "your.email@example.com"
+  phone: ""
+  first_name: ""
+  last_name: ""
+  location: "Bangalore, India"
+  linkedin_url: "https://www.linkedin.com/in/your-profile"
+  github_url: "https://github.com/your-username"
+  portfolio_url: "https://yourportfolio.dev"  # Optional
+
+# Job Preferences
+preferences:
+  # Resume uploads populate these; edit their order in My profile.
+  search_keywords: []
+  # Target roles to search and apply for
+  roles:
+    - "Software Engineer"
+    - "Software Developer"
+    - "Backend Developer"
+    - "Full Stack Developer"
+    - "Frontend Developer"
+    - "Data Analyst"
+    - "Machine Learning Engineer"
+    - "SDE Intern"
+
+  # Experience level tags
+  experience_level:
+    - "entry"       # 0-2 years
+    - "internship"  # Internships
+
+  # Strict experience filter (in years)
+  min_experience_years: 0
+  max_experience_years: 2
+
+  # Location preferences
+  locations:
+    - "Remote"
+    - "Bangalore"
+    - "Hyderabad"
+    - "Pune"
+    - "Delhi NCR"
+    - "Mumbai"
+
+  # Minimum expected annual salary in INR LPA (0 to ignore)
+  min_salary_lpa: 0
+
+  # Skills you possess (used for AI matching against job descriptions)
+  skills:
+    # Languages
+    - "Python"
+    - "JavaScript"
+    - "Java"
+    - "SQL"
+    # Web & Frameworks
+    - "React"
+    - "Node.js"
+    - "Express"
+    - "HTML5"
+    - "CSS3"
+    # Databases
+    - "MongoDB"
+    - "PostgreSQL"
+    - "MySQL"
+    # Cloud & Tools
+    - "AWS"
+    - "Docker"
+    - "Git"
+    - "GitHub"
+    # Core Fundamentals
+    - "Data Structures & Algorithms"
+    - "Object-Oriented Programming"
+    - "REST APIs"
+
+  # Keywords to EXCLUDE (jobs with titles containing these are skipped)
+  exclude_keywords:
+    - "Senior"
+    - "Lead"
+    - "Principal"
+    - "Staff"
+    - "Director"
+    - "5+ years"
+    - "10+ years"
+
+  # Minimum match score (0-100) to apply or show as high match
+  min_match_score: 50
+
+# Resume Configuration
+resume:
+  # Path to your resume PDF (relative to project root)
+  path: "config/resume.pdf"
+  # Professional summary used by AI for job matching and cover letter generation
+  summary: "Software Engineer with expertise in modern full-stack development, cloud computing, and REST APIs."
+
+# Application Form Auto-Fill Defaults
+application_defaults:
+  # Write this in your own words. It is used only for fields labelled Message/Note.
+  intro_message: ""
+  # Optional: a cover letter you have reviewed. AI letters are never auto-submitted.
+  cover_letter: ""
+  # Exact question labels (case/punctuation ignored) -> truthful answers.
+  # Unknown questions, including select/radio defaults, stop for review.
+  # Example only; add YOUR actual answers:
+  # answers:
+  #   "How many years of Python experience do you have?": 2
+  #   "Do you require visa sponsorship?": true
+  answers: {}
+  cover_letter_style: "concise"  # concise | detailed
+  willing_to_relocate: true
+  notice_period: "Immediate"     # Immediate | 15 days | 1 month | 2 months
+  expected_ctc: "As per industry standards"
+  current_ctc: "N/A"
+  years_of_experience: 0

@@ -1,0 +1,61 @@
+# Environment and credentials
+.env
+*.env
+!.env.example
+*.env.local
+*.env.*.local
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+
+# Application data & persistent browser profiles (sessions/cookies)
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# Playwright & browser testing
+.playwright/
+test-results/
+
+# Temporary / Scratch
+scratch/
+*.log
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Personal application data & credentials
+config/profile.yaml
+config/profile.yml
+profile.yaml
+profile.yml
+*.pdf
+*.doc
+*.docx
+*.pem
+*.key
+*.crt
+*.pfx
+*.p12
+credentials*
+.pytest_cache/
+.ruff_cache/
+node_modules/
+*.tsbuildinfo
+*.dpapi
+frontend/.vite/

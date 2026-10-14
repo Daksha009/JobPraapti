@@ -1,0 +1,83 @@
+# Platform-specific configuration
+
+platforms:
+  cutshort:
+    enabled: true
+    daily_limit: 20  # Persistent application attempt quota per UTC day
+    base_url: "https://cutshort.io"
+    search_url: "https://cutshort.io/profile/all-jobs"
+    search_urls:
+      - "https://cutshort.io/profile/all-jobs"
+    max_pages: 3
+    max_jobs: 300
+    delay_seconds: 1
+    # Search filters applied on the platform
+    filters:
+      experience: "0-2"
+      job_type: "full_time"
+
+  wellfound:
+    enabled: true
+    daily_limit: 20
+    base_url: "https://wellfound.com"
+    search_url: "https://wellfound.com/jobs/home"
+    max_pages: 5
+    delay_seconds: 4
+    filters:
+      role: "Engineering"
+      location: "India"
+
+  hirist:
+    enabled: true
+    daily_limit: 20
+    base_url: "https://www.hirist.tech"
+    search_url: "https://www.hirist.tech/"
+    max_pages: 5
+    delay_seconds: 3
+    filters:
+      experience: "0-2"
+
+  linkedin:
+    enabled: true
+    daily_limit: 20
+    base_url: "https://www.linkedin.com"
+    search_url: "https://www.linkedin.com/jobs/search/"
+    max_pages: 3
+    delay_seconds: 5
+    # LinkedIn-specific settings
+    easy_apply_only: true
+    filters:
+      experience_level: "1"  # Entry level
+      job_type: "F"          # Full-time
+      f_AL: true             # Easy Apply filter
+
+  foundit:
+    enabled: false
+    daily_limit: 20
+    base_url: "https://www.foundit.in"
+    search_url: "https://www.foundit.in/srp/results"
+    max_pages: 5
+    max_jobs: 50
+    delay_seconds: 3
+    filters:
+      experience: "0-2"
+      job_freshness: "7"  # Last 7 days
+
+  glassdoor:
+    enabled: true
+    daily_limit: 20
+    base_url: "https://www.glassdoor.co.in"
+    search_url: "https://www.glassdoor.co.in/Job"
+    max_pages: 3
+    max_jobs: 50
+    delay_seconds: 4
+    filters:
+      seniority_type: "entrylevel"
+      from_age: "7"  # Last 7 days
+
+# Global scraping settings
+scraping:
+  headless: true              # Run browser in headless mode
+  screenshot_on_error: true   # Take screenshot when errors occur
+  max_retries: 3              # Read-only navigation retries; submissions are never retried
+  timeout_seconds: 30         # Page load timeout
