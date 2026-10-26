@@ -45,6 +45,7 @@ class WellfoundScraper(BaseScraper):
                 try:
                     await self.page.wait_for_selector(
                         '[class*="styles_jobCard"], [class*="JobCard"], '
+                        '[class*="joblistingContainer"], '
                         '[data-test="StartupResult"], a[href*="/jobs/"]',
                         timeout=15000,
                     )
@@ -96,6 +97,7 @@ class WellfoundScraper(BaseScraper):
 
         # Wellfound has a nested structure: startup cards containing job listings
         selectors = [
+            '[class*="joblistingContainer"]',
             '[class*="styles_jobCard"]',
             '[class*="JobCard"]',
             '[data-test="StartupResult"]',

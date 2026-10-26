@@ -215,3 +215,31 @@ def test_progress_survives_completion_and_cancellation(monkeypatch, database, ca
         assert len(runner.events(run_id)) == run["event_count"]
     finally:
         runner.executor.shutdown(wait=True)
+
+
+def test_error_events_preserve_known_counts(monkeypatch, database):
+    async def work(self, action, platform, options):
+        for platform, current, total in [("hirist", 2, 5), ("linkedin", 0, 1)]:
+            emit("apply", "Candidates", platform=platform, current=current, total=total)
+            emit(
+                "apply",
+                "Connection failed",
+                platform=platform,
+                state="attention",
+                current=0,
+                total=0,
+            )
+        return {"error": "Connection failed"}
+
+    monkeypatch.setattr(Runner, "_perform", work)
+    runner = Runner(database)
+    try:
+        runner.start("apply", "all", {"dry_run": True, "limit": 5})
+        runner.executor.shutdown(wait=True)
+        run = runner.list()[0]
+        assert sum(unit["total"] for unit in run["progress"]) == 6
+        assert sum(unit["current"] for unit in run["progress"]) == 2
+        assert all(unit["state"] == "attention" for unit in run["progress"])
+        assert run["events"][-1]["total"] == 0
+    finally:
+        runner.executor.shutdown(wait=True)

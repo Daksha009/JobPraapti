@@ -35,6 +35,7 @@ import { Badge, Modal, PlatformIcon } from "./components";
 import { Overview } from "./Overview";
 import { BrandMark } from "./BrandMark";
 import { Jobs } from "./Jobs";
+import { JobAnswers } from "./JobAnswers";
 import { Platforms } from "./Platforms";
 import { Profile } from "./Profile";
 import { Automation, RunDialog } from "./Automation";
@@ -543,6 +544,16 @@ export default function App() {
               </ol>
             </>
           )}
+          <JobAnswers
+            key={job.id}
+            job={job}
+            disabled={
+              jobBusy ||
+              Boolean(active) ||
+              ["applied", "applying"].includes(job.status)
+            }
+            notify={notify}
+          />
           <div className="detail-actions">
             <button
               className="secondary"

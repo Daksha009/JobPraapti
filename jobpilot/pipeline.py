@@ -77,8 +77,8 @@ async def apply_platforms(
             state="attention"
             if result.get("error") or result.get("review") or result.get("failed")
             else "completed",
-            current=result.get("processed", 0),
-            total=result.get("selected", 0),
+            current=result.get("processed"),
+            total=result.get("selected"),
             metrics={
                 key: result.get(key, 0)
                 for key in (

@@ -10,6 +10,7 @@ export interface Job {
   applied_at?: string;
   description?: string;
   match_reason?: string;
+  generated_answers?: string;
   application_history?: {
     action: string;
     details: string;
@@ -105,6 +106,7 @@ export interface Profile {
     expected_ctc: string;
     current_ctc: string;
     willing_to_relocate: boolean;
+    compose_narrative_answers?: boolean;
   };
 }
 let token = "";

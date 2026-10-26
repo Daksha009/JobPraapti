@@ -71,6 +71,90 @@ async def test_every_dry_run_makes_zero_application_clicks(page, name, database)
     assert await page.evaluate("window.submits || 0") == 0
 
 
+@pytest.mark.parametrize(
+    ("message", "expected"),
+    [
+        ("Your application has been submitted successfully!", "applied"),
+        ("Your application has not been submitted successfully!", "review"),
+    ],
+)
+async def test_hirist_one_click_confirmation(page, database, message, expected):
+    body = f"""<button onclick="window.entries=(window.entries||0)+1;
+      document.body.innerHTML='<div>{message}</div>'">Apply now</button>"""
+    applier, record = await adapter_page(page, "hirist", body, database)
+    assert (await applier.apply_to_job(record)).status == expected
+    assert await page.evaluate("window.entries") == 1
+
+
+async def test_hirist_preexisting_confirmation_never_clicks_apply(page, database):
+    body = """<div>Your application has been submitted successfully!</div>
+      <button onclick="window.entries=1">Apply now</button>"""
+    applier, record = await adapter_page(page, "hirist", body, database)
+    result = await applier.apply_to_job(record)
+    assert result.status == "review"
+    assert "already present" in result.message
+    assert await page.evaluate("window.entries || 0") == 0
+
+
+async def test_linkedin_closed_listing_is_expired_without_clicks(page, database):
+    body = """<span>No longer accepting applications</span>
+      <button onclick="window.entries=1">Easy Apply</button>"""
+    applier, record = await adapter_page(page, "linkedin", body, database)
+    assert (await applier.apply_to_job(record)).status == "expired"
+    assert await page.evaluate("window.entries || 0") == 0
+
+
+async def test_wellfound_unavailable_listing_is_expired_without_clicks(page, database):
+    body = """<div>The job listing is no longer available.</div>
+      <button onclick="window.entries=1">Apply</button>"""
+    adapter, job = await adapter_page(page, "wellfound", body, database)
+    assert (await adapter.apply_to_job(job)).status == "expired"
+    assert await page.evaluate("window.entries || 0") == 0
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_linkedin_known_reminder_advances_once(page, database, dry_run):
+    body = """<button onclick="window.entries=(window.entries||0)+1; document.querySelector('aside').hidden=false">Easy Apply</button>
+      <aside hidden data-sdui-screen="com.linkedin.sdui.flagshipnav.jobs.PreApplySafetyTipsModal">
+      <button onclick="window.continues=(window.continues||0)+1; this.parentElement.hidden=true; document.querySelector('section').hidden=false">Continue applying</button></aside>
+      <section role="dialog" hidden><label>Full name<input required></label>
+      <button onclick="window.submits=(window.submits||0)+1; document.body.innerHTML='Application submitted successfully'">Submit application</button></section>"""
+    adapter, job = await adapter_page(page, "linkedin", body, database, dry_run=dry_run)
+    assert (await adapter.apply_to_job(job)).status == (
+        "dry_run" if dry_run else "applied"
+    )
+    for counter in ("entries", "continues", "submits"):
+        assert await page.evaluate(f"window.{counter} || 0") == (0 if dry_run else 1)
+
+
+async def test_linkedin_does_not_advance_unrecognized_reminder(page, database):
+    body = """<button onclick="document.querySelector('aside').hidden=false">Easy Apply</button>
+      <aside hidden><h2>Verify identity</h2><button onclick="window.continues=1">Continue applying</button></aside>"""
+    adapter, job = await adapter_page(page, "linkedin", body, database)
+    assert (await adapter.apply_to_job(job)).status == "review"
+    assert await page.evaluate("window.continues || 0") == 0
+
+
+async def test_glassdoor_waits_for_hydrated_apply_control_without_clicking(
+    page, database
+):
+    body = """<main></main><script>setTimeout(() => {
+      document.querySelector('main').innerHTML = '<button data-test="easyApply" onclick="window.entries=1">Easy Apply</button>';
+    }, 750)</script>"""
+    adapter, job = await adapter_page(page, "glassdoor", body, database, dry_run=True)
+    assert (await adapter.apply_to_job(job)).status == "dry_run"
+    assert await page.evaluate("window.entries || 0") == 0
+
+
+async def test_expired_state_after_hydration_prevents_application(page, database):
+    body = """<main></main><script>setTimeout(() => {
+      document.querySelector('main').innerHTML = '<div>No longer accepting applications</div><button onclick="window.entries=1">Easy Apply</button>';
+    }, 750)</script>"""
+    adapter, job = await adapter_page(page, "linkedin", body, database)
+    assert (await adapter.apply_to_job(job)).status == "expired"
+    assert await page.evaluate("window.entries || 0") == 0
+
+
 async def test_unknown_question_blocks_submit_and_reports_label(page, database):
     applier, record = await adapter_page(
         page, "linkedin", html("linkedin", unknown=True), database
@@ -124,6 +208,69 @@ async def test_native_fields_explicit_answers_only(page, profile):
     assert "Willing to relocate?" in unresolved
     assert await page.locator("input[type=number]").input_value() == "0"
     assert await page.locator("input:checked").count() == 0
+
+
+async def test_wrapping_label_with_broken_for_uses_visible_question(page, profile):
+    await page.set_content("""<form>
+      <label for="undefined">Phone Number*<div><input id="phone"></div></label>
+      <label for="undefined">Employer-specific question?<div><input id="question"></div></label>
+    </form>""")
+    unresolved = await fill_form(page.locator("form"), profile, settings.resume_path)
+    assert await page.locator("#phone").input_value() == profile["personal"]["phone"]
+    assert unresolved == ["Employer-specific question?"]
+
+
+async def test_hidden_native_radio_with_visible_label_is_not_silently_ignored(
+    page, profile
+):
+    await page.set_content("""<form><fieldset><legend>Background check consent?</legend>
+      <label>Yes<input type="radio" name="consent" value="yes" style="display:none"></label>
+      <label>No<input type="radio" name="consent" value="no" style="display:none"></label>
+    </fieldset></form>""")
+    unresolved = await fill_form(page.locator("form"), profile, settings.resume_path)
+    assert unresolved == ["Background check consent?"]
+    assert await page.locator("input:checked").count() == 0
+
+
+async def test_linkedin_waits_for_native_application_dialog_after_click(page, database):
+    body = """<button onclick="window.entries=(window.entries||0)+1; setTimeout(()=>document.querySelector('dialog').showModal(),750)">Easy Apply</button>
+      <dialog><label>Full name<input required></label>
+      <button onclick="window.submits=(window.submits||0)+1;document.body.innerHTML='Application submitted successfully'">Submit application</button></dialog>"""
+    adapter, job = await adapter_page(page, "linkedin", body, database)
+    assert (await adapter.apply_to_job(job)).status == "applied"
+    assert await page.evaluate("window.entries") == 1
+    assert await page.evaluate("window.submits") == 1
+
+
+async def test_empty_dialog_waits_for_fields_and_controls_before_filling(
+    page, database
+):
+    body = """<button onclick="document.querySelector('dialog').showModal();setTimeout(()=>{document.querySelector('dialog').innerHTML=document.querySelector('template').innerHTML},750)">Easy Apply</button>
+      <dialog></dialog><template><label>Full name<input required></label>
+      <button onclick="window.filled=document.querySelector('input').value;window.submits=(window.submits||0)+1;document.body.innerHTML='Application submitted successfully'">Submit application</button></template>"""
+    adapter, job = await adapter_page(page, "linkedin", body, database)
+    assert (await adapter.apply_to_job(job)).status == "applied"
+    assert await page.evaluate("window.filled") == "Test Candidate"
+    assert await page.evaluate("window.submits") == 1
+
+
+async def test_phone_country_code_uses_profile_phone_not_default_option(page, profile):
+    await page.set_content("""<form><label>Phone country code*<select required>
+      <option value="us">United States (+1)</option><option value="in">India (+91)</option>
+      </select></label></form>""")
+    assert await fill_form(page.locator("form"), profile, settings.resume_path) == []
+    assert await page.locator("select").input_value() == "in"
+
+
+async def test_ambiguous_calling_code_requires_explicit_answer(page, profile):
+    profile["personal"]["phone"] = "+12025550123"
+    await page.set_content("""<form><label>Phone country code*<select required>
+      <option value="">Choose</option><option value="us">United States (+1)</option>
+      <option value="ca">Canada (+1)</option></select></label></form>""")
+    assert await fill_form(page.locator("form"), profile, settings.resume_path) == [
+        "Phone country code*"
+    ]
+    assert await page.locator("select").input_value() == ""
 
 
 def test_no_skill_specific_experience_guess(profile):

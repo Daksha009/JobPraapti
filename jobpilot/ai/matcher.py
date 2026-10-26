@@ -24,6 +24,9 @@ class JobMatcher:
     Returns a score (0-100) and reasoning for each job.
     """
 
+    def __init__(self):
+        self._ai_unavailable = False
+
     def _rule_based_score(self, job: Job) -> dict:
         """Fast fallback rule-based score when AI API is unavailable."""
         # Check experience eligibility
@@ -160,14 +163,22 @@ Scoring guide:
 """
 
         try:
-            if not settings.gemini_api_key:
+            if self._ai_unavailable or not settings.gemini_api_key:
                 emit(
                     "match",
-                    "Using offline matching: no API key configured",
+                    "Using offline matching for this run after an AI service failure"
+                    if self._ai_unavailable
+                    else "Using offline matching: no API key configured",
                     platform=job.platform,
                 )
                 return self._rule_based_score(job)
-            text = (await generate_text(prompt, json_output=True)).strip()
+            try:
+                text = (await generate_text(prompt, json_output=True)).strip()
+            except Exception:
+                # Avoid repeating a full API timeout for every remaining job.
+                # A fresh matcher in the next run tries the service again.
+                self._ai_unavailable = True
+                raise
 
             # Clean up response (remove markdown code fences if present)
             if text.startswith("```"):

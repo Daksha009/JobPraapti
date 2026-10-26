@@ -15,20 +15,26 @@ from .config import DATA_DIR, settings
 _pool = ContextVar("jobpraapti_browser_pool", default=None)
 
 
+class BrowserConnectionError(ValueError):
+    """Safe, actionable connection message without endpoint or credential details."""
+
+
 async def connect_regular(playwright):
     import asyncio
     from .workspace_browser import ensure_workspace, identify_context, SETUP_MESSAGE
 
-    address = await asyncio.to_thread(ensure_workspace)
     try:
-        browser = await playwright.chromium.connect_over_cdp(address, timeout=60000)
+        address = await asyncio.to_thread(ensure_workspace)
+        # Native approval is a human step; allow time to find Chrome's prompt.
+        # The runner can still cancel the pending async connection immediately.
+        browser = await playwright.chromium.connect_over_cdp(address, timeout=180000)
         if not browser.contexts:
             raise ValueError("Chrome did not expose a regular browser context")
         await identify_context(browser.contexts[0])
         return browser
     except Exception as exc:
         # Never surface the endpoint (which can contain an authorization token).
-        raise ValueError(
+        raise BrowserConnectionError(
             "Chrome connection was not approved or is unavailable. " + SETUP_MESSAGE
         ) from exc
 
@@ -96,6 +102,7 @@ class BrowserSession:
         self._browser = None
         self._pooled = False
         self.keep_page = False
+        self.extra_pages = []
         self._lock = FileLock(str(DATA_DIR / f"{platform}.browser.lock"))
 
     async def start(self, headless=True):
@@ -105,7 +112,7 @@ class BrowserSession:
             self._pooled = pool is not None
             if pool is not None:
                 if pool.get("error"):
-                    raise ValueError(pool["error"])
+                    raise BrowserConnectionError(pool["error"])
                 if not pool.get("browser"):
                     pool["playwright"] = await async_playwright().start()
                     try:
@@ -130,6 +137,10 @@ class BrowserSession:
 
     async def close(self):
         try:
+            if not self.keep_page:
+                for page in self.extra_pages:
+                    if not page.is_closed():
+                        await page.close()
             if self.page and not self.keep_page:
                 await self.page.close()
         finally:

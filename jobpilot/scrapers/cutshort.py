@@ -5,6 +5,7 @@ Scrapes job listings from cutshort.io using Playwright.
 
 import logging
 import re
+from urllib.parse import parse_qs, urlparse
 from typing import List, Optional
 
 from .base import BaseScraper
@@ -49,6 +50,14 @@ class CutshortScraper(BaseScraper):
                     logger.info(f"[cutshort] Scraping page {page_num}: {url}")
                     await self.navigate(url, wait_until="domcontentloaded")
                     await self._random_delay(0.5)
+                    target = urlparse(self.page.url)
+                    redirect = parse_qs(target.query).get("redirect_url", [""])[0]
+                    if target.path == "/" and redirect.startswith("/profile/"):
+                        self.navigation_errors.append(
+                            "Cutshort sign-in required: the jobs page redirected to Candidate login. "
+                            "Sign in in regular Chrome from Platforms, then retry."
+                        )
+                        break
 
                     # Wait for job links
                     try:

@@ -6,13 +6,20 @@ export function progressUnits(events: RunEvent[]) {
   for (const event of events) {
     const key = `${event.stage}:${event.platform || "all"}`;
     const previous = units.get(key);
-    units.set(key, {
+    const merged = {
       ...previous,
       ...Object.fromEntries(
         Object.entries(event).filter(([, value]) => value != null),
       ),
       metrics: { ...previous?.metrics, ...event.metrics },
-    } as RunEvent);
+    } as RunEvent;
+    for (const counter of ["current", "total"] as const) {
+      const values = [previous?.[counter], event[counter]].filter(
+        (value): value is number => typeof value === "number",
+      );
+      if (values.length) merged[counter] = Math.max(...values);
+    }
+    units.set(key, merged);
   }
   return [...units.values()];
 }

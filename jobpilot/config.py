@@ -105,6 +105,22 @@ class Settings:
             answers = profile.get("application_defaults", {}).get("answers", {})
             if not isinstance(answers, dict):
                 errors.append("application_defaults.answers must be a mapping")
+            defaults = profile.get("application_defaults", {})
+            for key in (
+                "compose_narrative_answers",
+                "visa_sponsorship_required",
+                "background_check_consent",
+            ):
+                if key in defaults and type(defaults[key]) is not bool:
+                    errors.append(f"application_defaults.{key} must be true or false")
+            authorization = defaults.get("work_authorization", {})
+            if not isinstance(authorization, dict) or any(
+                not isinstance(country, str) or type(value) is not bool
+                for country, value in authorization.items()
+            ):
+                errors.append(
+                    "application_defaults.work_authorization must map countries to true/false"
+                )
             if for_apply:
                 personal = profile.get("personal", {})
                 for field in ("full_name", "email", "phone"):

@@ -2,7 +2,7 @@
 
 platforms:
   cutshort:
-    enabled: true
+    enabled: false  # Temporarily skipped until the user reconnects this platform.
     daily_limit: 20  # Persistent application attempt quota per UTC day
     base_url: "https://cutshort.io"
     search_url: "https://cutshort.io/profile/all-jobs"

@@ -41,6 +41,101 @@ async def test_cutshort_does_not_mix_adjacent_company_metadata(page):
     ]
 
 
+async def test_linkedin_current_card_keeps_title_company_and_location(page):
+    scraper = get_scraper("linkedin")
+    scraper.page = page
+    await page.set_content("""<div class="job-card-container" data-job-id="123">
+      <a class="job-card-list__title--link" href="/jobs/view/123/?tracking=test">
+        <strong>Junior Software Engineer</strong></a>
+      <div class="artdeco-entity-lockup__subtitle">Example Company</div>
+      <ul class="job-card-container__metadata-wrapper"><li>Delhi, India (Remote)</li></ul>
+      <li class="job-card-container__footer-item">Easy Apply</li>
+    </div>""")
+    [job] = await scraper._extract_jobs_from_page()
+    assert job.title == "Junior Software Engineer"
+    assert job.company == "Example Company"
+    assert job.location == "Delhi, India (Remote)"
+    assert job.job_type == "easy_apply"
+    assert job.url == "https://www.linkedin.com/jobs/view/123/"
+
+
+async def test_linkedin_stops_when_pagination_repeats_same_jobs(page, monkeypatch):
+    from unittest.mock import AsyncMock
+
+    scraper = get_scraper("linkedin")
+    scraper.page = page
+    scraper.platform_config["max_pages"] = 3
+    scraper._random_delay = AsyncMock()
+    scraper._scroll_job_list = AsyncMock()
+    await page.route(
+        "**/*", lambda r: r.fulfill(content_type="text/html", body=CARDS["linkedin"])
+    )
+    navigate = AsyncMock(wraps=scraper.navigate)
+    monkeypatch.setattr(scraper, "navigate", navigate)
+    jobs = await scraper.scrape_jobs()
+    assert len(jobs) == 1
+    assert navigate.await_count == 2
+
+
+async def test_cutshort_signed_out_redirect_has_actionable_error(page):
+    from unittest.mock import AsyncMock
+
+    scraper = get_scraper("cutshort")
+    scraper.page = page
+    scraper.platform_config["search_urls"] = ["https://cutshort.io/profile/all-jobs"]
+    scraper._random_delay = AsyncMock()
+
+    async def redirect(*args, **kwargs):
+        await page.goto("https://cutshort.io/?redirect_url=%2Fprofile%2Fall-jobs")
+
+    scraper.navigate = redirect
+    assert await scraper.scrape_jobs() == []
+    assert "sign-in required" in scraper.navigation_errors[0]
+
+
+async def test_ai_service_failure_falls_back_once_per_matcher(monkeypatch):
+    from unittest.mock import AsyncMock
+    from jobpilot.ai import matcher
+
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-test-key")
+    generate = AsyncMock(side_effect=TimeoutError("synthetic timeout"))
+    monkeypatch.setattr(matcher, "generate_text", generate)
+    job = Job(
+        title="Software Engineer",
+        company="Fixture",
+        platform="hirist",
+        url="https://www.hirist.tech/j/fixture",
+        skills=["Python"],
+    )
+    instance = matcher.JobMatcher()
+    first = await instance.score_job(job)
+    second = await instance.score_job(job)
+    assert first["score"] == second["score"]
+    assert generate.await_count == 1
+    await matcher.JobMatcher().score_job(job)
+    assert generate.await_count == 2
+
+
+async def test_malformed_ai_response_does_not_disable_next_request(monkeypatch):
+    from unittest.mock import AsyncMock
+    from jobpilot.ai import matcher
+
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-test-key")
+    generate = AsyncMock(side_effect=["invalid json", '{"score": 88}'])
+    monkeypatch.setattr(matcher, "generate_text", generate)
+    job = Job(
+        title="Software Engineer",
+        company="Fixture",
+        platform="hirist",
+        url="https://www.hirist.tech/j/fixture",
+        skills=["Python"],
+    )
+    instance = matcher.JobMatcher()
+    await instance.score_job(job)
+    assert (await instance.score_job(job))["score"] == 88
+    assert generate.await_count == 2
+
+
 async def test_wellfound_ignores_sign_up_navigation_and_foreign_links(page):
     scraper = get_scraper("wellfound")
     scraper.page = page
@@ -50,6 +145,22 @@ async def test_wellfound_ignores_sign_up_navigation_and_foreign_links(page):
     jobs = await scraper._extract_jobs_from_page()
     assert len(jobs) == 1
     assert jobs[0].title == "Software Engineer" and jobs[0].external_id == "123"
+
+
+async def test_wellfound_recommendations_include_card_metadata(page):
+    scraper = get_scraper("wellfound")
+    scraper.page = page
+    await page.set_content("""<div class="styles_joblistingContainer_fixture">
+      <div class="styles_information_fixture">
+        <a href="/jobs/123-software-engineer"><h3>Software Engineer</h3></a>
+        <a class="styles_company_fixture" href="/company/example">Example</a>
+        <span class="styles_location_fixture">India · Remote</span>
+        <span class="styles_salaryEstimate_fixture">₹12L – ₹24L</span>
+      </div><button>Save</button></div>""")
+    [job] = await scraper._extract_jobs_from_page()
+    assert job.company == "Example"
+    assert job.location == "India · Remote"
+    assert job.salary == "₹12L – ₹24L"
 
 
 async def test_full_pipeline_discovery_matching_submission_and_dedup(

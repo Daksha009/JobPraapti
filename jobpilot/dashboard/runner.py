@@ -85,6 +85,15 @@ class Runner:
                         **(event.get("metrics") or {}),
                     },
                 }
+                # Counters are cumulative; older error events sometimes reset them.
+                for counter in ("current", "total"):
+                    values = [
+                        value
+                        for value in (previous.get(counter), event.get(counter))
+                        if isinstance(value, (int, float))
+                    ]
+                    if values:
+                        progress[key][counter] = max(values)
             row["events"] = events[-200:]
             row["event_count"] = len(events)
             row["progress"] = list(progress.values())

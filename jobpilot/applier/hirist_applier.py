@@ -15,3 +15,7 @@ class HiristApplier(BaseApplier):
         'a[href*="/logout"]',
         '[data-testid="header-profile-avatar-image"][alt="user_profile"]',
     )
+    success_selectors = (
+        *BaseApplier.success_selectors,
+        "text=/^Your application has been submitted successfully[.!]?$/i",
+    )

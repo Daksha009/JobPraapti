@@ -1,7 +1,73 @@
 import { describe, it, expect } from "vitest";
-import { duration, progressUnits, runMetrics } from "./progress";
+import {
+  applicationOutcomes,
+  duration,
+  progressUnits,
+  runMetrics,
+  stageProgress,
+} from "./progress";
 import type { Run, RunEvent } from "./lib";
 describe("live run accounting", () => {
+  it("preserves known candidate counts after historical error resets", () => {
+    const events = [
+      { stage: "apply", platform: "hirist", current: 2, total: 5 },
+      { stage: "apply", platform: "linkedin", current: 0, total: 1 },
+      {
+        stage: "apply",
+        platform: "hirist",
+        current: 0,
+        total: 0,
+        state: "attention",
+      },
+      {
+        stage: "apply",
+        platform: "linkedin",
+        current: 0,
+        total: 0,
+        state: "attention",
+      },
+    ] as RunEvent[];
+    const units = progressUnits(events);
+    expect(stageProgress(units, "apply")).toEqual({ current: 2, total: 6 });
+    expect(units[0].state).toBe("attention");
+    expect(events[2].total).toBe(0);
+  });
+  it("aggregates every platform instead of showing the final empty queue", () => {
+    const units = [
+      { stage: "apply", platform: "hirist", current: 0, total: 5 },
+      { stage: "apply", platform: "linkedin", current: 1, total: 1 },
+      { stage: "apply", platform: "glassdoor", current: 0, total: 0 },
+    ] as RunEvent[];
+    expect(stageProgress(units, "apply")).toEqual({ current: 1, total: 6 });
+    expect(
+      stageProgress(
+        [...units, { stage: "apply", current: 1, total: 6 } as RunEvent],
+        "apply",
+      ),
+    ).toEqual({ current: 1, total: 6 });
+  });
+  it("explains blockers in historical results without rewriting run history", () => {
+    const run = {
+      action: "pipeline",
+      result: {
+        applications: [
+          {
+            platform: "hirist",
+            error: "Login required: python -m jobpilot login -p hirist",
+          },
+          {
+            platform: "glassdoor",
+            message: "No eligible matched or shortlisted jobs",
+          },
+        ],
+      },
+    } as Run;
+    const outcomes = applicationOutcomes(run);
+    expect(outcomes[0].needsLogin).toBe(true);
+    expect(outcomes[0].message).toContain("during this run");
+    expect(outcomes[1].needsLogin).toBe(false);
+    expect(outcomes[1].message).toContain("No eligible");
+  });
   it("merges snapshots without double-counting repeated polling or per-job totals", () => {
     const event = {
       stage: "apply",

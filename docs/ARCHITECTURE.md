@@ -31,11 +31,13 @@ CLI / Flask / scheduler
 3. Register the pair once in `registry.py`:
 
 ```python
-register_platform(PlatformSpec(
-    "example",
-    "jobpilot.scrapers.example:ExampleScraper",
-    "jobpilot.applier.example_applier:ExampleApplier",
-))
+register_platform(
+    PlatformSpec(
+        "example",
+        "jobpilot.scrapers.example:ExampleScraper",
+        "jobpilot.applier.example_applier:ExampleApplier",
+    )
+)
 ```
 
 4. Add a `platforms.example` mapping in `config/platforms.yaml` with `enabled`, `daily_limit`, page limits and delays. Add credential placeholders to `.env.example` if email/password login is supported.

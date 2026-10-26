@@ -144,6 +144,84 @@ def web_blueprint(database):
             )
         return jsonify(recovered=True)
 
+    @api.post("/api/jobs/<int:job_id>/answers")
+    @configuration_edit
+    def save_job_answers(job_id):
+        from ..applier.answers import load_answer_record
+        import math
+
+        job = database.get_job(job_id)
+        if not job or job.status in ("applying", "applied"):
+            raise ValueError("Choose an application that is not running or completed")
+        answers = request.get_json().get("answers")
+        if not isinstance(answers, dict) or len(answers) > 100:
+            raise ValueError("Answers must be a mapping of up to 100 questions")
+        for question, answer in answers.items():
+            if (
+                not isinstance(question, str)
+                or not question.strip()
+                or len(question) > 2000
+            ):
+                raise ValueError("Each question needs a label of up to 2000 characters")
+            if type(answer) not in (str, bool, int, float):
+                raise ValueError("Answers must be text, numbers, or true/false")
+            if isinstance(answer, str) and (not answer.strip() or len(answer) > 10000):
+                raise ValueError("Text answers must contain 1 to 10000 characters")
+            if isinstance(answer, float) and not math.isfinite(answer):
+                raise ValueError("Numeric answers must be finite")
+        record = load_answer_record(job.generated_answers) or {
+            "version": 1,
+            "entries": [],
+            "unresolved": [],
+        }
+        record["overrides"] = answers
+        database.save_application_answers(job_id, record)
+        return jsonify(saved=True)
+
+    @api.post("/api/jobs/<int:job_id>/answers/prepare")
+    @configuration_edit
+    def prepare_job_answer(job_id):
+        from ..applier.answers import AnswerComposer, load_answer_record, read_resume
+        from ..applier.forms import answer_for
+
+        job = database.get_job(job_id)
+        if not job or job.status in ("applying", "applied"):
+            raise ValueError("Choose an application that is not running or completed")
+        question = request.get_json().get("question")
+        if (
+            not isinstance(question, str)
+            or not question.strip()
+            or len(question) > 2000
+        ):
+            raise ValueError("Enter a question of up to 2000 characters")
+        question = question.strip()
+        composer = AnswerComposer(
+            settings.profile, job, read_resume(settings.resume_path)
+        )
+        composer.record["entries"] = [
+            entry
+            for entry in composer.record["entries"]
+            if entry["question"] != question
+        ]
+        answer = composer.resolve(
+            {"label": question, "type": "textarea"},
+            answer_for(question, settings.profile),
+        )
+        record = load_answer_record(job.generated_answers) or {
+            "version": 1,
+            "entries": [],
+            "unresolved": [],
+            "overrides": {},
+        }
+        record["entries"] = composer.record["entries"]
+        record["unresolved"] = [
+            q for q in record.get("unresolved", []) if q != question
+        ]
+        if answer is None:
+            record["unresolved"].append(question)
+        database.save_application_answers(job_id, record)
+        return jsonify(record=record, prepared=answer is not None)
+
     def timezone_name():
         import pytz
 

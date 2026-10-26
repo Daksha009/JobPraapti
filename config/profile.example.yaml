@@ -99,6 +99,12 @@ resume:
 
 # Application Form Auto-Fill Defaults
 application_defaults:
+  # Opt in to local, resume-grounded responses to supported narrative questions.
+  compose_narrative_answers: false
+  # Add only facts you have confirmed (omit unknown declarations).
+  work_authorization: {}
+  # visa_sponsorship_required: true
+  # background_check_consent: true
   # Write this in your own words. It is used only for fields labelled Message/Note.
   intro_message: ""
   # Optional: a cover letter you have reviewed. AI letters are never auto-submitted.

@@ -2,14 +2,15 @@
 
 import asyncio
 import logging
+import re
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
-from ..browser import BrowserSession
+from ..browser import BrowserConnectionError, BrowserSession
 from ..config import DATA_DIR, settings
 from ..database import db
 from ..progress import emit
-from .forms import fill_form
+from .forms import fill_form, validation_errors
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +31,7 @@ class BaseApplier:
     apply_selectors = ('button:text-is("Apply now")', 'button:text-is("Apply")')
     form_selectors = (
         '[role="dialog"]',
+        "dialog[open]",
         ".modal__wrapper",
         'form:has(input[type="file"])',
     )
@@ -42,6 +44,7 @@ class BaseApplier:
         'button:text-is("Submit application")',
         'button:text-is("Submit Application")',
         'button:text-is("Send Application")',
+        'button:text-is("Send application")',
         'button:text-is("Submit")',
         'button:text-is("Send")',
         'button:text-is("Apply")',
@@ -53,8 +56,12 @@ class BaseApplier:
         'button:text-is("Applied")',
         "text=/^You have already applied[.!]?$/i",
     )
+    expired_selectors = ("text=/^This job is no longer accepting applications[.!]?$/i",)
     # Cutshort uses a second same-site portal entry before the form.
     portal_path = ""
+    interstitial_selectors: tuple[str, ...] = ()
+    handoff_domains: tuple[str, ...] = ()
+    handoff_form_selectors: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -78,6 +85,7 @@ class BaseApplier:
             "submit_selectors",
             "success_selectors",
             "already_selectors",
+            "expired_selectors",
         ):
             override = self.config.get("application", {}).get(key)
             if override is not None:
@@ -91,7 +99,12 @@ class BaseApplier:
                     )
                 setattr(self, key, tuple(override))
         self.dry_run = dry_run
-        self.daily_limit = min(daily_limit, self.config.get("daily_limit", 20))
+        self.daily_quota = self.config.get("daily_limit", 20)
+        if type(self.daily_quota) is not int or self.daily_quota < 1:
+            raise ValueError("Platform daily_limit must be a positive integer")
+        # The legacy argument is the maximum attempts for this run. It must not
+        # replace the platform's persistent daily quota when reserving a job.
+        self.daily_limit = min(daily_limit, self.daily_quota)
         self.min_score = settings.min_match_score if min_score is None else min_score
         self.min_experience = (
             settings.min_experience_years if min_experience is None else min_experience
@@ -107,6 +120,8 @@ class BaseApplier:
         self.db = database or db
         self.session = BrowserSession(self.platform_name)
         self.page = self.context = None
+        self._active_handoff = False
+        self.composer = None
 
     async def start_browser(self, headless=True):
         await self.session.start(headless)
@@ -125,13 +140,26 @@ class BaseApplier:
                 parsed.hostname == domain
                 or (parsed.hostname or "").endswith("." + domain)
                 for domain in self.allowed_domains
+                + (self.handoff_domains if self._active_handoff else ())
             )
         )
 
     async def visible(self, selectors, scope=None):
         scope = scope if scope is not None else self.page
         for selector in selectors:
-            for item in await scope.locator(selector).all():
+            # :text-is matches the smallest text element. A button containing
+            # nested spans (current LinkedIn SDUI) needs an accessible-name lookup.
+            exact = re.fullmatch(r'(button|a):text-is\("([^"\n]+)"\)', selector)
+            locator = (
+                scope.get_by_role(
+                    "button" if exact[1] == "button" else "link",
+                    name=exact[2],
+                    exact=True,
+                )
+                if exact
+                else scope.locator(selector)
+            )
+            for item in await locator.all():
                 if await item.is_visible():
                     return item
         return None
@@ -220,38 +248,180 @@ class BaseApplier:
             "Complete the site verification manually" if challenge is not None else ""
         )
 
+    async def advance_interstitial(self):
+        """Adapters may advance a recognized informational step before the form."""
+        return False
+
+    def application_url(self, job):
+        return job.url
+
+    async def prepare_application_entry(self):
+        """Optional platform-specific readiness before the first application click."""
+
+    async def prepare_form(self, scope):
+        """Adapters may handle a specific resume-upload widget before generic fields."""
+        return ""
+
+    async def form_scope(self):
+        selectors = (
+            self.handoff_form_selectors if self._active_handoff else self.form_selectors
+        )
+        return await self.visible(selectors)
+
+    async def follow_handoff(self):
+        tabs = [
+            p
+            for p in self.context.pages
+            if p != self.page and await p.opener() == self.page
+        ]
+        if len(tabs) > 1:
+            return "Multiple application tabs opened; inspect them before continuing"
+        target = tabs[0] if tabs else self.page
+        if target == self.page and self.allowed_url(target.url):
+            return ""
+        if target.url == "about:blank":
+            try:
+                await target.wait_for_url(
+                    lambda url: str(url) != "about:blank", timeout=5000
+                )
+            except Exception:
+                return "Application tab has not loaded; inspect it before continuing"
+        parsed = urlparse(target.url)
+        known = (
+            parsed.scheme == "https"
+            and parsed.hostname in self.handoff_domains
+            and parsed.port in (None, 443)
+            and not parsed.username
+        )
+        if not known:
+            if tabs:
+                return f"Application opened another tab on {parsed.hostname or 'an unknown site'}; complete this employer flow manually"
+            return ""  # blocked() reports an unknown same-tab redirect.
+        self._active_handoff = True
+        if target != self.page:
+            self.session.extra_pages.append(target)
+            self.page = target
+        self.composer.record["handoff_url"] = target.url
+        emit(
+            "apply",
+            f"Continuing application on {parsed.hostname}",
+            platform=self.platform_name,
+        )
+        await self.wait_for_application_surface()
+        return ""
+
+    async def form_fingerprint(self, scope):
+        return await scope.evaluate("el => el.innerText.replace(/\\s+/g, ' ').trim()")
+
+    async def wait_for_form_change(self, before):
+        deadline = asyncio.get_running_loop().time() + 15
+        while asyncio.get_running_loop().time() < deadline:
+            if any(
+                [
+                    await tab.opener() == self.page
+                    for tab in self.context.pages
+                    if tab != self.page
+                ]
+            ):
+                return True
+            if (
+                await self.blocked()
+                or await self.visible(self.success_selectors) is not None
+            ):
+                return True
+            scope = await self.form_scope()
+            if scope is not None:
+                if await self.form_fingerprint(scope) != before:
+                    return True
+                if (
+                    await self.visible(
+                        ('[aria-invalid="true"]', '[role="alert"]'), scope
+                    )
+                    is not None
+                ):
+                    return False
+            await asyncio.sleep(0.25)
+        return False
+
+    async def wait_for_application_surface(self):
+        """Apply clicks can hydrate a modal after the initial page has settled."""
+        deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            scope = await self.form_scope()
+            form_ready = (
+                scope is not None
+                and await self.visible(
+                    self.next_selectors + self.submit_selectors, scope
+                )
+                is not None
+            )
+            if (
+                await self.blocked()
+                or await self.visible(self.success_selectors) is not None
+                or form_ready
+                or await self.visible(self.interstitial_selectors) is not None
+                or (self.portal_path and self.portal_path in self.page.url)
+            ):
+                return
+            for tab in self.context.pages:
+                if tab != self.page and await tab.opener() == self.page:
+                    return
+            if asyncio.get_running_loop().time() >= deadline:
+                return
+            await asyncio.sleep(0.25)
+
     async def apply_to_job(self, job):
+        self._active_handoff = False
+        self.composer = None
         if not self.allowed_url(job.url):
             return ApplicationResult(
                 "review", "Job URL is outside the platform's allowed domains"
             )
-        await self.page.goto(job.url, wait_until="domcontentloaded")
+        from .answers import AnswerComposer, read_resume
+
+        self.composer = AnswerComposer(
+            settings.profile, job, read_resume(settings.resume_path)
+        )
+        await self.page.goto(self.application_url(job), wait_until="domcontentloaded")
         await self.settle()
-        reason = await self.blocked()
-        if reason:
-            return ApplicationResult("review", reason)
-        if await self.visible(self.already_selectors) is not None:
-            return ApplicationResult(
-                "already_applied", "Site confirms this application already exists"
-            )
-        if await self.visible(self.success_selectors) is not None:
-            return ApplicationResult(
-                "review",
-                "Confirmation was already present before applying; verify this listing manually",
-            )
-        if (
-            await self.visible(
-                ("text=/^This job is no longer accepting applications[.!]?$/i",)
-            )
-            is not None
-        ):
-            return ApplicationResult("expired", "Job no longer accepting applications")
-        entry = await self.visible(self.apply_selectors)
+        await self.prepare_application_entry()
+        deadline = asyncio.get_running_loop().time() + 10
+        while True:
+            reason = await self.blocked()
+            if reason:
+                return ApplicationResult("review", reason)
+            if await self.visible(self.already_selectors) is not None:
+                return ApplicationResult(
+                    "already_applied", "Site confirms this application already exists"
+                )
+            if await self.visible(self.success_selectors) is not None:
+                return ApplicationResult(
+                    "review",
+                    "Confirmation was already present before applying; verify this listing manually",
+                )
+            if await self.visible(self.expired_selectors) is not None:
+                return ApplicationResult(
+                    "expired", "Job no longer accepting applications"
+                )
+            entry = await self.visible(self.apply_selectors)
+            if entry is not None or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(0.25)
         if entry is None:
             return ApplicationResult(
                 "review",
                 "Apply control not found; inspect the listing or adapter selectors",
             )
+        if not self.dry_run:
+            from .descriptions import description_from_text
+
+            description = description_from_text(
+                self.platform_name, await self.page.locator("body").inner_text()
+            )
+            if description:
+                job.description = description
+                self.composer.record["description_source"] = self.page.url
+                self.db.save_job_description(job.id, description)
         href = await entry.get_attribute("href")
         if href:
             from urllib.parse import urljoin
@@ -266,20 +436,16 @@ class BaseApplier:
                 "Apply control found; no clicks, uploads or submission performed",
             )
         # The first click can itself submit a one-click application. Never retry a click.
+        self.composer.record["entry_clicked"] = True
+        self.db.save_application_answers(job.id, self.composer.record)
         await entry.click()
         await self.settle()
         portal_entered = False
         for _ in range(8):
-            if any(
-                [
-                    await tab.opener() == self.page
-                    for tab in self.context.pages
-                    if tab != self.page
-                ]
-            ):
-                return ApplicationResult(
-                    "review", "Application opened another tab; inspect it manually"
-                )
+            await self.wait_for_application_surface()
+            handoff_error = await self.follow_handoff()
+            if handoff_error:
+                return ApplicationResult("review", handoff_error)
             reason = await self.blocked()
             if reason:
                 return ApplicationResult("review", reason)
@@ -287,7 +453,10 @@ class BaseApplier:
                 return ApplicationResult(
                     "applied", "Site displayed an explicit application confirmation"
                 )
-            scope = await self.visible(self.form_selectors)
+            if await self.advance_interstitial():
+                await self.settle()
+                continue
+            scope = await self.form_scope()
             if scope is None:
                 if (
                     self.portal_path
@@ -304,11 +473,21 @@ class BaseApplier:
                     "review",
                     "No confirmation or supported application form; verify manually before retrying",
                 )
-            unanswered = await fill_form(scope, settings.profile, settings.resume_path)
+            preparation_error = await self.prepare_form(scope)
+            if preparation_error:
+                return ApplicationResult("review", preparation_error)
+            unanswered = await fill_form(
+                scope, settings.profile, settings.resume_path, self.composer
+            )
+            self.db.save_application_answers(job.id, self.composer.record)
             if unanswered:
                 return ApplicationResult(
                     "review",
-                    "Add exact answers to application_defaults.answers: "
+                    (
+                        "Site rejected saved answers: "
+                        if self.composer.record.get("validation_errors")
+                        else "Saved answers needed: "
+                    )
                     + "; ".join(unanswered),
                 )
             validation = await self.visible(
@@ -318,6 +497,8 @@ class BaseApplier:
                 return ApplicationResult("review", "Form validation requires review")
             submit = await self.visible(self.submit_selectors, scope)
             if submit is not None:
+                self.composer.record["submission_started"] = True
+                self.db.save_application_answers(job.id, self.composer.record)
                 await submit.click()
                 # Confirmation can be asynchronous. Wait for evidence, never submit twice.
                 try:
@@ -337,8 +518,21 @@ class BaseApplier:
             next_button = await self.visible(self.next_selectors, scope)
             if next_button is None:
                 return ApplicationResult("review", "No supported next/submit control")
+            before = await self.form_fingerprint(scope)
             await next_button.click()
-            await self.settle()
+            if not await self.wait_for_form_change(before):
+                rejected = await validation_errors(scope)
+                if rejected:
+                    self.composer.record["unresolved"] = rejected
+                    self.composer.record["validation_errors"] = rejected
+                    self.db.save_application_answers(job.id, self.composer.record)
+                    return ApplicationResult(
+                        "review", "Site rejected saved answers: " + "; ".join(rejected)
+                    )
+                return ApplicationResult(
+                    "review",
+                    "The form did not advance or reported validation errors; inspect the open tab",
+                )
         return ApplicationResult(
             "review", "Application exceeded eight steps; inspect manually"
         )
@@ -432,6 +626,11 @@ class BaseApplier:
             )
             return results
         try:
+            emit(
+                "apply",
+                "Connecting to regular Chrome. Allow the debugging connection if Chrome asks.",
+                platform=self.platform_name,
+            )
             await self.start_browser(headless)
             emit("apply", "Verifying your Chrome session", platform=self.platform_name)
             if not await self.authenticate():
@@ -450,7 +649,7 @@ class BaseApplier:
                     total=len(jobs),
                 )
                 if not self.dry_run and not self.db.claim_application(
-                    job.id, self.daily_limit
+                    job.id, self.daily_quota
                 ):
                     results["skipped"] += 1
                     results["processed"] = index
@@ -463,6 +662,7 @@ class BaseApplier:
                     )
                     continue
                 try:
+                    self.composer = None
                     outcome = await self.apply_to_job(job)
                 except Exception as exc:
                     # Any exception may occur after a remote side effect; avoid automatic retry.
@@ -474,6 +674,11 @@ class BaseApplier:
                         f"Browser step failed ({type(exc).__name__}); inspect application before retrying",
                     )
                 if not self.dry_run:
+                    if self.composer is not None:
+                        self.db.save_application_answers(job.id, self.composer.record)
+                    if outcome.status == "review" and self.page is not None:
+                        # Preserve the incomplete form for the user instead of discarding it.
+                        self.session.keep_page = True
                     if (
                         outcome.status == "review"
                         and self.page is not None
@@ -532,6 +737,14 @@ class BaseApplier:
                         "url": job.url,
                     }
                 )
+                if outcome.status == "review":
+                    results["message"] = (
+                        "Paused this platform at an incomplete application; its Chrome tab remains open."
+                    )
+                    break
+        except BrowserConnectionError as exc:
+            results["error"] = str(exc)
+            results["blocker"] = "browser_connection"
         except Exception as exc:
             results["error"] = (
                 f"{type(exc).__name__}: could not complete {self.platform_name}; check browser installation and session"

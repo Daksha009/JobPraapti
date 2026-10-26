@@ -270,6 +270,23 @@ class Database:
         finally:
             conn.close()
 
+    def save_application_answers(self, job_id: int, record: dict):
+        """Persist job-specific drafts/answers without changing application state."""
+        import json
+
+        with closing(self._get_connection()) as conn, conn:
+            conn.execute(
+                "UPDATE jobs SET generated_answers=?, updated_at=datetime('now') WHERE id=?",
+                (json.dumps(record, ensure_ascii=False), job_id),
+            )
+
+    def save_job_description(self, job_id: int, description: str):
+        with closing(self._get_connection()) as conn, conn:
+            conn.execute(
+                "UPDATE jobs SET description=?, updated_at=datetime('now') WHERE id=?",
+                (description, job_id),
+            )
+
     def update_match_score(self, job_id: int, score: float, reason: str = ""):
         """Update a job's AI match score."""
         if not math.isfinite(score) or not 0 <= score <= 100:

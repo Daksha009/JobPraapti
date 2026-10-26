@@ -427,6 +427,27 @@ export function Profile({
           />{" "}
           Willing to relocate
         </label>
+        <label className="check-label">
+          <input
+            type="checkbox"
+            checked={Boolean(
+              profile.application_defaults.compose_narrative_answers,
+            )}
+            onChange={(e) =>
+              field(
+                "application_defaults",
+                "compose_narrative_answers",
+                e.target.checked,
+              )
+            }
+          />
+          Prepare written answers using my resume and the job description
+        </label>
+        <p className="caption">
+          Uses matching skills and resume evidence locally. Screening facts need
+          your saved answers. You can review or edit each job’s answers in
+          Opportunities.
+        </p>
         <label>
           Introduction message
           <textarea

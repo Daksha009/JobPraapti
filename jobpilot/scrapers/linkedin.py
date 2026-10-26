@@ -57,6 +57,7 @@ class LinkedInScraper(BaseScraper):
     async def scrape_jobs(self) -> List[Job]:
         """Scrape jobs from LinkedIn."""
         jobs = []
+        seen_urls = set()
         jobs_per_page = 25  # LinkedIn shows 25 jobs per page
 
         for page_num in range(self.max_pages):
@@ -85,10 +86,12 @@ class LinkedInScraper(BaseScraper):
                 await self._scroll_job_list()
 
                 page_jobs = await self._extract_jobs_from_page()
-                if not page_jobs:
+                fresh_jobs = [job for job in page_jobs if job.url not in seen_urls]
+                if not fresh_jobs:
                     break
 
-                jobs.extend(page_jobs)
+                seen_urls.update(job.url for job in fresh_jobs)
+                jobs.extend(fresh_jobs)
                 logger.info(
                     f"[linkedin] Page {page_num + 1}: found {len(page_jobs)} jobs"
                 )
@@ -149,7 +152,7 @@ class LinkedInScraper(BaseScraper):
         """Parse a LinkedIn job card into a Job object."""
         # Title
         title_el = await card.query_selector(
-            ".job-card-list__title, .base-search-card__title, "
+            ".job-card-list__title--link, .job-card-list__title, .base-search-card__title, "
             '[class*="job-title"], h3 a, h3'
         )
         title = await title_el.inner_text() if title_el else ""
@@ -161,7 +164,7 @@ class LinkedInScraper(BaseScraper):
         # Company
         company_el = await card.query_selector(
             ".job-card-container__primary-description, "
-            '.base-search-card__subtitle, [class*="company"], h4 a, h4'
+            '.artdeco-entity-lockup__subtitle, .base-search-card__subtitle, [class*="company"], h4 a, h4'
         )
         company = await company_el.inner_text() if company_el else "Unknown"
 
@@ -182,13 +185,15 @@ class LinkedInScraper(BaseScraper):
         # Location
         location_el = await card.query_selector(
             ".job-card-container__metadata-item, "
+            ".job-card-container__metadata-wrapper, "
             '.job-search-card__location, [class*="location"]'
         )
         location = await location_el.inner_text() if location_el else ""
 
         # Easy Apply badge
         easy_apply_el = await card.query_selector(
-            '[class*="easy-apply"], .job-card-container__apply-method'
+            '[class*="easy-apply"], .job-card-container__apply-method, '
+            '.job-card-container__footer-item:has-text("Easy Apply")'
         )
         job_type = "easy_apply" if easy_apply_el else "standard"
 
