@@ -9,7 +9,7 @@ from jobpilot.registry import PLATFORMS
 from jobpilot.config import settings
 
 LABELS = {
-    "cutshort": "Apply now",
+    "cutshort": "Apply to this job",
     "wellfound": "Apply",
     "hirist": "Apply now",
     "linkedin": "Easy Apply",
@@ -29,6 +29,13 @@ def html(name, *, unknown=False, confirmed=True):
         if confirmed
         else "document.querySelector('[role=dialog]').remove()"
     )
+    if name == "cutshort":
+        return f"""<button id="entry" onclick="window.entries=(window.entries||0)+1; document.querySelector('[role=dialog]').hidden=false">Apply to this job</button>
+        <section role="dialog" hidden><textarea name="message"></textarea>
+        <div class="sc-d023fd03-8" id="filename">old</div>
+        <button type="button">Upload another resume</button>
+        <input type="file" style="display:none" onchange="document.querySelector('#filename').textContent='resume_test'">{question}
+        <button onclick="window.submits=(window.submits||0)+1; {confirmation}">Send</button></section>"""
     return f"""<button id="entry" onclick="window.entries=(window.entries||0)+1; document.querySelector('[role=dialog]').hidden=false">{LABELS[name]}</button>
     <section role="dialog" hidden>
     <label>Full name<input required></label><label>Email<input type="email" required></label>
@@ -38,6 +45,10 @@ def html(name, *, unknown=False, confirmed=True):
 
 
 async def adapter_page(page, name, body, database, dry_run=False):
+    if name == "cutshort":
+        settings.profile["application_defaults"]["intro_message"] = (
+            "Fixture introduction"
+        )
     applier = get_applier(name, database=database, dry_run=dry_run)
     applier.page, applier.context = page, page.context
     await page.route(

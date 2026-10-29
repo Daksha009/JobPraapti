@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 class ApplicationResult:
     status: str
     message: str
+    continue_queue: bool = False
 
 
 class BaseApplier:
@@ -62,6 +63,11 @@ class BaseApplier:
     interstitial_selectors: tuple[str, ...] = ()
     handoff_domains: tuple[str, ...] = ()
     handoff_form_selectors: tuple[str, ...] = ()
+    description_selectors: tuple[str, ...] = ()
+    external_apply_selectors: tuple[str, ...] = ()
+    handled_form_selectors: tuple[str, ...] = ()
+    confirmation_timeout_ms = 30000
+    application_surface_timeout_ms = 10000
 
     def __init__(
         self,
@@ -238,7 +244,7 @@ class BaseApplier:
             return "Login or verification required; run the login command"
         challenge = await self.visible(
             (
-                'iframe[src*="recaptcha"]',
+                'iframe[src*="recaptcha"]:not([src*="/anchor?"][src*="size=invisible"])',
                 'iframe[src*="hcaptcha"]',
                 'input[autocomplete="one-time-code"]',
                 "#challenge-running",
@@ -258,9 +264,17 @@ class BaseApplier:
     async def prepare_application_entry(self):
         """Optional platform-specific readiness before the first application click."""
 
+    async def portal_entry(self, job):
+        """Find a second same-site application control, if the adapter supports it."""
+        return await self.visible(self.apply_selectors)
+
     async def prepare_form(self, scope):
         """Adapters may handle a specific resume-upload widget before generic fields."""
         return ""
+
+    async def post_submit(self):
+        """Return an outcome for a recognized post-submit handoff, if any."""
+        return None
 
     async def form_scope(self):
         selectors = (
@@ -330,6 +344,9 @@ class BaseApplier:
             ):
                 return True
             scope = await self.form_scope()
+            if scope is None:
+                # A saved step may close its dialog and render the next surface later.
+                return True
             if scope is not None:
                 if await self.form_fingerprint(scope) != before:
                     return True
@@ -345,7 +362,10 @@ class BaseApplier:
 
     async def wait_for_application_surface(self):
         """Apply clicks can hydrate a modal after the initial page has settled."""
-        deadline = asyncio.get_running_loop().time() + 10
+        deadline = (
+            asyncio.get_running_loop().time()
+            + self.application_surface_timeout_ms / 1000
+        )
         while True:
             scope = await self.form_scope()
             form_ready = (
@@ -382,7 +402,11 @@ class BaseApplier:
         self.composer = AnswerComposer(
             settings.profile, job, read_resume(settings.resume_path)
         )
-        await self.page.goto(self.application_url(job), wait_until="domcontentloaded")
+        response = await self.page.goto(
+            self.application_url(job), wait_until="domcontentloaded"
+        )
+        if response is not None and response.status in (404, 410):
+            return ApplicationResult("expired", "Job listing is no longer available")
         await self.settle()
         await self.prepare_application_entry()
         deadline = asyncio.get_running_loop().time() + 10
@@ -408,20 +432,55 @@ class BaseApplier:
                 break
             await asyncio.sleep(0.25)
         if entry is None:
+            if await self.visible(self.external_apply_selectors) is not None:
+                return ApplicationResult(
+                    "review",
+                    "Employer-site application requires a supported employer adapter; other jobs will continue",
+                    True,
+                )
             return ApplicationResult(
                 "review",
                 "Apply control not found; inspect the listing or adapter selectors",
+                True,
             )
         if not self.dry_run:
             from .descriptions import description_from_text
 
-            description = description_from_text(
-                self.platform_name, await self.page.locator("body").inner_text()
-            )
+            description = ""
+            section = await self.visible(self.description_selectors)
+            if section is not None:
+                candidate = (await section.inner_text()).strip()
+                if len(candidate) >= 80:
+                    description = candidate[:20000]
+            if not description:
+                description = description_from_text(
+                    self.platform_name, await self.page.locator("body").inner_text()
+                )
             if description:
                 job.description = description
                 self.composer.record["description_source"] = self.page.url
                 self.db.save_job_description(job.id, description)
+                # Some sites mislabel a senior listing as "Fresher" in its card.
+                # Recheck explicit, standalone experience requirements in the JD.
+                from ..models import is_experience_eligible
+
+                for line in description.splitlines():
+                    requirement = re.match(
+                        r"^\s*[•*-]?\s*(\d+(?:\.\d+)?\s*(?:\+|[-–]\s*\d+(?:\.\d+)?)?\s*(?:years?|yrs?))\s+(?:of\s+)?(?:relevant\s+)?experience\b",
+                        line,
+                        re.I,
+                    )
+                    if (
+                        requirement
+                        and not is_experience_eligible(
+                            requirement[1], self.min_experience, self.max_experience
+                        )[0]
+                    ):
+                        return ApplicationResult(
+                            "review",
+                            "The job description's experience requirement exceeds your saved range",
+                            True,
+                        )
         href = await entry.get_attribute("href")
         if href:
             from urllib.parse import urljoin
@@ -463,7 +522,7 @@ class BaseApplier:
                     and self.portal_path in self.page.url
                     and not portal_entered
                 ):
-                    portal_entry = await self.visible(self.apply_selectors)
+                    portal_entry = await self.portal_entry(job)
                     if portal_entry is not None:
                         portal_entered = True
                         await portal_entry.click()
@@ -476,8 +535,19 @@ class BaseApplier:
             preparation_error = await self.prepare_form(scope)
             if preparation_error:
                 return ApplicationResult("review", preparation_error)
+            # Resume editing may navigate from review back to a different form.
+            scope = await self.form_scope()
+            if scope is None:
+                return ApplicationResult(
+                    "review",
+                    "Application form changed during preparation; inspect the open tab",
+                )
             unanswered = await fill_form(
-                scope, settings.profile, settings.resume_path, self.composer
+                scope,
+                settings.profile,
+                settings.resume_path,
+                self.composer,
+                handled_selectors=self.handled_form_selectors,
             )
             self.db.save_application_answers(job.id, self.composer.record)
             if unanswered:
@@ -489,22 +559,30 @@ class BaseApplier:
                         else "Saved answers needed: "
                     )
                     + "; ".join(unanswered),
+                    True,
                 )
             validation = await self.visible(
                 ('[aria-invalid="true"]', '[role="alert"]'), scope
             )
             if validation is not None:
-                return ApplicationResult("review", "Form validation requires review")
+                return ApplicationResult(
+                    "review", "Form validation requires review", True
+                )
             submit = await self.visible(self.submit_selectors, scope)
             if submit is not None:
                 self.composer.record["submission_started"] = True
                 self.db.save_application_answers(job.id, self.composer.record)
                 await submit.click()
+                handoff = await self.post_submit()
+                if handoff is not None:
+                    return handoff
                 # Confirmation can be asynchronous. Wait for evidence, never submit twice.
                 try:
                     await self.page.locator(
                         ", ".join(self.success_selectors)
-                    ).first.wait_for(state="visible", timeout=10000)
+                    ).first.wait_for(
+                        state="visible", timeout=self.confirmation_timeout_ms
+                    )
                 except Exception:
                     pass
                 if await self.visible(self.success_selectors) is not None:
@@ -517,7 +595,9 @@ class BaseApplier:
                 )
             next_button = await self.visible(self.next_selectors, scope)
             if next_button is None:
-                return ApplicationResult("review", "No supported next/submit control")
+                return ApplicationResult(
+                    "review", "No supported next/submit control", True
+                )
             before = await self.form_fingerprint(scope)
             await next_button.click()
             if not await self.wait_for_form_change(before):
@@ -527,7 +607,9 @@ class BaseApplier:
                     self.composer.record["validation_errors"] = rejected
                     self.db.save_application_answers(job.id, self.composer.record)
                     return ApplicationResult(
-                        "review", "Site rejected saved answers: " + "; ".join(rejected)
+                        "review",
+                        "Site rejected saved answers: " + "; ".join(rejected),
+                        True,
                     )
                 return ApplicationResult(
                     "review",
@@ -563,7 +645,17 @@ class BaseApplier:
                 )
                 for job in batch:
                     summary["considered"] += 1
-                    if job.match_score < self.min_score:
+                    # Older offline scoring assigned 15 points even when neither
+                    # a role nor a skill matched. Do not treat that as 10% relevance.
+                    legacy_no_match = (
+                        status == "matched"
+                        and self.min_score > 0
+                        and job.match_score == 15
+                        and job.match_reason.startswith(
+                            "Matched role keywords and 0 core skills (general)."
+                        )
+                    )
+                    if job.match_score < self.min_score or legacy_no_match:
                         summary["below_score"] += 1
                     elif not job.is_experience_eligible(
                         self.min_experience, self.max_experience
@@ -692,11 +784,12 @@ class BaseApplier:
                         evidence.parent.mkdir(parents=True, exist_ok=True)
                         try:
                             await self.page.screenshot(
-                                path=str(evidence), full_page=True
+                                path=str(evidence), full_page=True, timeout=5000
                             )
                             outcome = ApplicationResult(
                                 outcome.status,
                                 outcome.message + f"; Screenshot: {evidence}",
+                                outcome.continue_queue,
                             )
                         except Exception:
                             pass
@@ -738,6 +831,14 @@ class BaseApplier:
                     }
                 )
                 if outcome.status == "review":
+                    if outcome.continue_queue:
+                        results["message"] = (
+                            "Jobs needing answers remain in Review; other eligible jobs continue."
+                        )
+                        if index < len(jobs):
+                            self.page = await self.context.new_page()
+                            self.session.extra_pages.append(self.page)
+                        continue
                     results["message"] = (
                         "Paused this platform at an incomplete application; its Chrome tab remains open."
                     )

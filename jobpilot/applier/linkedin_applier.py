@@ -7,6 +7,14 @@ import re
 
 
 class LinkedInApplier(BaseApplier):
+    success_selectors = (
+        *BaseApplier.success_selectors,
+        r"text=/^\s*Your application was sent to [^\r\n]+[.!]\s*$/",
+    )
+    already_selectors = (
+        *BaseApplier.already_selectors,
+        "text=/^Application submitted$/",
+    )
     platform_name = "linkedin"
     HOME_URL = "https://www.linkedin.com"
     LOGIN_URL = "https://www.linkedin.com/login"

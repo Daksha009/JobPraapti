@@ -182,3 +182,24 @@ async def test_run_limit_does_not_replace_daily_quota(database):
     assert result["applied"] == 0 and result["skipped"] == 1
     assert database.get_job(third).status == "matched"
     assert adapter.apply_to_job.await_count == 1
+
+
+def test_legacy_unmatched_offline_score_cannot_enter_ten_point_queue(database):
+    reason = "Matched role keywords and 0 core skills (general). Strengths: none."
+    old = add(database, title="Unrelated job", match_score=15, match_reason=reason)
+    eligible = add(
+        database, title="Software Engineer", match_score=15, match_reason="Employer fit"
+    )
+    shortlisted = add(
+        database,
+        title="Manually chosen job",
+        match_score=15,
+        match_reason=reason,
+        status="shortlisted",
+    )
+    candidates, summary = get_applier(
+        "hirist", database=database, min_score=10
+    ).select_candidates()
+    assert {job.id for job in candidates} == {eligible, shortlisted}
+    assert summary["below_score"] == 1
+    assert old not in {job.id for job in candidates}

@@ -2,6 +2,7 @@
 
 import json
 import re
+import time
 from urllib.parse import urlsplit
 from filelock import FileLock
 from .config import DATA_DIR
@@ -29,7 +30,16 @@ def update_preferences(**values):
 def _write_preferences(data):
     temporary = PREFERENCES.with_suffix(".tmp")
     temporary.write_text(json.dumps(data), encoding="utf-8")
-    temporary.replace(PREFERENCES)
+    # Windows indexers/sync clients can briefly hold the destination open.
+    # Keep the old file intact and retry the atomic rename, never truncate it.
+    for attempt in range(5):
+        try:
+            temporary.replace(PREFERENCES)
+            break
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.05 * (attempt + 1))
 
 
 def mark_signed_out(name, value=True):

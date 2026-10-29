@@ -45,13 +45,54 @@ def phone_country_option(options: list[dict], phone: str):
     return matches[0] if len(matches) == 1 else None
 
 
-def answer_for(label: str, profile: dict):
+def answer_for(label: str, profile: dict, *, job_location: str = ""):
     key = normalize(label)
     personal = profile.get("personal", {})
     defaults = profile.get("application_defaults", {})
     explicit = {normalize(k): v for k, v in defaults.get("answers", {}).items()}
     if key in explicit:
         return explicit[key]
+    if key in (
+        "expected ctc",
+        "what is your expected ctc",
+        "your expected ctc",
+        "expected ctc lpa",
+        "expected salary lpa",
+    ):
+        if defaults.get("expected_salary_single_lpa") is not None:
+            return defaults["expected_salary_single_lpa"]
+    if (
+        defaults.get("willing_to_work_hybrid_or_onsite_india") is True
+        and re.search(r"\bindia\b", normalize(job_location))
+        and re.match(r"(?:are you|would you be) (?:comfortable|willing|open)\b", key)
+        and re.search(r"\b(hybrid|on site|onsite|work from office|wfo)\b", key)
+        and not re.search(
+            r"\b(night|shifts?|weekends?|travel|currently|visa|sponsor\w*)\b", key
+        )
+    ):
+        return True
+    if key in ("first name", "last name"):
+        field = key.replace(" ", "_")
+        if personal.get(field):
+            return personal[field]
+        names = str(personal.get("full_name", "")).strip().split(maxsplit=1)
+        if len(names) == 2:
+            return names[0 if key == "first name" else 1]
+    if re.fullmatch(r"how many years of work experience do you have with .+", key):
+        # Zero completed professional years bounds every individual skill at zero;
+        # a positive total never establishes a skill-specific duration.
+        if defaults.get("years_of_experience") == 0:
+            return 0
+    if key in (
+        "your official notice period in days",
+        "notice period in days",
+        "notice period days",
+    ):
+        if normalize(str(defaults.get("notice_period", ""))) in (
+            "immediate",
+            "immediately available",
+        ):
+            return 0
     # These declarations are used only after the user saves them explicitly.
     if key in (
         "do you require visa sponsorship",
@@ -182,12 +223,17 @@ async def validation_errors(scope) -> list[str]:
 
 
 async def fill_form(
-    scope, profile: dict, resume_path: Path, composer=None
+    scope, profile: dict, resume_path: Path, composer=None, *, handled_selectors=()
 ) -> list[str]:
     unresolved = []
     radio_seen = {}
     phone_code = ""
     for field in await scope.locator("input, select, textarea").all():
+        if handled_selectors and await field.evaluate(
+            "(el, selectors) => selectors.some(selector => el.matches(selector))",
+            list(handled_selectors),
+        ):
+            continue
         info = await field.evaluate(FIELD_INFO)
         kind, label = info["type"], info["label"]
         if kind in ("hidden", "submit", "button", "reset") or await field.is_disabled():
@@ -207,7 +253,11 @@ async def fill_form(
                 or not await wrapper.is_visible()
             ):
                 continue
-        answer = answer_for(label, profile)
+        answer = answer_for(
+            label,
+            profile,
+            job_location=composer.job.location if composer is not None else "",
+        )
         if (
             answer is None
             and kind == "checkbox"

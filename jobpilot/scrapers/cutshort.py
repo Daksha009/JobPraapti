@@ -5,11 +5,12 @@ Scrapes job listings from cutshort.io using Playwright.
 
 import logging
 import re
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 from typing import List, Optional
 
 from .base import BaseScraper
 from ..models import Job
+from ..config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,16 @@ class CutshortScraper(BaseScraper):
                 break
 
             for page_num in range(1, self.max_pages + 1):
-                url = target_url if page_num == 1 else f"{target_url}?page={page_num}"
+                parsed = urlparse(target_url)
+                query = parse_qs(parsed.query)
+                if parsed.path == "/profile/all-jobs":
+                    query.update(
+                        minexp=[settings.min_experience_years],
+                        maxexp=[settings.max_experience_years],
+                    )
+                if page_num > 1:
+                    query["page"] = [page_num]
+                url = urlunparse(parsed._replace(query=urlencode(query, doseq=True)))
                 try:
                     logger.info(f"[cutshort] Scraping page {page_num}: {url}")
                     await self.navigate(url, wait_until="domcontentloaded")
@@ -72,7 +82,7 @@ class CutshortScraper(BaseScraper):
                     if not page_jobs:
                         break
 
-                    jobs.extend(page_jobs)
+                    jobs.extend(page_jobs[: max_jobs - len(jobs)])
                     logger.info(
                         f"[cutshort] Found {len(page_jobs)} new jobs on {url} (Total so far: {len(jobs)})"
                     )
@@ -100,7 +110,7 @@ class CutshortScraper(BaseScraper):
                 if (!title || !url) continue;
                 
                 // Traverse up to find job card container
-                let container = link.closest('article, [data-job-id], [class*="jobCard"], [class*="JobCard"]');
+                let container = link.closest('[class~="sc-963106f5-1"], article, [data-job-id], [class*="jobCard"], [class*="JobCard"]');
                 if (!container) {
                     container = link;
                     for (let i = 0; i < 5 && container.parentElement; i++) {
@@ -115,7 +125,12 @@ class CutshortScraper(BaseScraper):
                 results.push({
                     title,
                     url,
-                    lines
+                    lines,
+                    company: container.querySelector('[class~="sc-963106f5-15"]')?.innerText.split('\\n')[1]?.trim(),
+                    location: container.querySelector('[class~="sc-963106f5-29"]')?.innerText.trim(),
+                    experience: Array.from(container.querySelectorAll('[class~="sc-963106f5-26"]')).map(e=>e.innerText.trim()).find(t=>/\\d\\s*(?:-\\s*\\d+\\s*)?yrs?\\b/.test(t)),
+                    salary: Array.from(container.querySelectorAll('[class~="sc-963106f5-26"]')).map(e=>e.innerText.trim()).find(t=>/[₹$]/.test(t)),
+                    skills: Array.from(container.querySelectorAll('[class~="sc-60b7a349-1"]')).map(e=>e.innerText.trim())
                 });
             }
             return results;
@@ -176,6 +191,12 @@ class CutshortScraper(BaseScraper):
             match = re.search(r"/job/([a-zA-Z0-9_-]+)", url)
             if match:
                 external_id = match.group(1)
+
+            company = (r.get("company") or company).removeprefix("at ")
+            location = r.get("location") or location
+            experience = r.get("experience") or experience
+            salary = r.get("salary") or salary
+            skills = r.get("skills") or skills
 
             jobs.append(
                 Job(

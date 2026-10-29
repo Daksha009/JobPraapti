@@ -258,3 +258,109 @@ def test_search_filters_use_configured_experience(profile):
     linkedin = get_scraper("linkedin")
     linkedin.platform_config["easy_apply_only"] = False
     assert "f_AL" not in parse_qs(urlparse(linkedin._build_search_url()).query)
+
+
+async def test_current_cutshort_card_keeps_experience_skills_and_company(page):
+    scraper = get_scraper("cutshort")
+    scraper.page = page
+    await page.set_content("""<div class="sc-963106f5-1">
+      <div class="sc-963106f5-15"><h3><a href="https://cutshort.io/job/backend-123">Backend Engineer</a></h3><div>Example</div></div>
+      <div class="sc-963106f5-29">Remote only</div>
+      <div class="sc-963106f5-26">2 - 5 yrs</div>
+      <div class="sc-963106f5-26">₹10L / yr</div>
+      <span class="sc-60b7a349-1">Python</span></div>""")
+    [job] = await scraper._extract_jobs_from_page()
+    assert (job.company, job.location, job.experience, job.skills) == (
+        "Example",
+        "Remote only",
+        "2 - 5 yrs",
+        ["Python"],
+    )
+
+
+async def test_current_foundit_cards_ignore_nested_title_and_company_links(page):
+    scraper = get_scraper("foundit")
+    scraper.page = page
+    await page.set_content("""<div class="shadow-job-card">Navigation only</div>
+      <div class="shadow-job-card"><h2 class="jobCardTitle"><a href="https://www.foundit.in/job/backend-123456">Python Engineer</a></h2>
+      <span class="jobCardCompany"><a href="/company/example">Example</a></span>
+      <div class="jobCardLocation">Remote, India</div><div class="jobCardExperience">0-2 yrs</div>
+      <button class="jobCardSaveUnsaveBtn">Save</button></div>""")
+    [job] = await scraper._extract_jobs_from_page()
+    assert job.title == "Python Engineer"
+    assert job.company == "Example"
+    assert job.experience == "0-2 yrs"
+    assert job.external_id == "123456"
+
+
+def test_foundit_current_search_uses_encoded_query_and_result_offset():
+    scraper = get_scraper("foundit")
+    url = scraper._build_search_url("Python Engineer", page=2)
+    assert "/search/python-engineer-jobs?" in url
+    assert "query=Python%20Engineer" in url
+    assert "start=21" in url
+    assert "page=" not in url
+
+
+async def test_foundit_fallback_does_not_mix_adjacent_jobs(page):
+    scraper = get_scraper("foundit")
+    scraper.page = page
+    await page.set_content("""<main>
+      <div><a href="https://www.foundit.in/job/111111">Junior Developer</a><p>Delhi</p><p>0-1 yrs</p></div>
+      <div><a href="https://www.foundit.in/job/222222">Senior Engineer</a><p>Mumbai</p><p>8-10 yrs</p></div>
+      </main>""")
+    jobs = await scraper._extract_jobs_js()
+    assert [(j.title, j.location, j.experience) for j in jobs] == [
+        ("Junior Developer", "Delhi", "0-1 yrs"),
+        ("Senior Engineer", "Mumbai", "8-10 yrs"),
+    ]
+
+
+@pytest.mark.parametrize(
+    "status,should_retry", [(503, True), (401, False), (429, False)]
+)
+async def test_gemini_uses_alternate_model_only_for_unavailable_service(
+    monkeypatch, status, should_retry
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from google import genai
+    from jobpilot.ai import client as ai_client
+
+    monkeypatch.setenv("GEMINI_API_KEY", "synthetic-test-key")
+    monkeypatch.setenv("GEMINI_MODEL", "test-primary")
+
+    class SyntheticError(Exception):
+        code = status
+
+    generate = AsyncMock(
+        side_effect=[SyntheticError(), SimpleNamespace(text='{"score": 50}')]
+    )
+
+    class Context:
+        async def __aenter__(self):
+            return SimpleNamespace(models=SimpleNamespace(generate_content=generate))
+
+        async def __aexit__(self, *args):
+            return False
+
+    monkeypatch.setattr(
+        genai, "Client", lambda **kwargs: SimpleNamespace(aio=Context())
+    )
+    if should_retry:
+        assert (
+            await ai_client.generate_text("synthetic", json_output=True)
+            == '{"score": 50}'
+        )
+        assert [call.kwargs["model"] for call in generate.await_args_list] == [
+            "test-primary",
+            ai_client.FALLBACK_MODEL,
+        ]
+        assert all(
+            call.kwargs["config"] == {"response_mime_type": "application/json"}
+            for call in generate.await_args_list
+        )
+    else:
+        with pytest.raises(SyntheticError):
+            await ai_client.generate_text("synthetic")
+        assert generate.await_count == 1

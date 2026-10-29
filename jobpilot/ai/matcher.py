@@ -57,8 +57,8 @@ class JobMatcher:
         )
         role_match = any(r in job.title.lower() for r in candidate_roles)
 
-        base_score = 40 if role_match else 15
-        skill_score = min(50, len(matched_skills) * 8)
+        base_score = 40 if role_match else 0
+        skill_score = min(50, len(matched_skills) * 10)
         total_score = min(95, base_score + skill_score)
 
         strengths = [s.title() for s in matched_skills[:5]]
@@ -68,7 +68,7 @@ class JobMatcher:
             else "Specific domain knowledge"
         ]
 
-        reason = f"Matched role keywords and {len(matched_skills)} core skills ({', '.join(strengths[:3]) if strengths else 'general'})."
+        reason = f"Matched {'a target role' if role_match else 'no target role'} and {len(matched_skills)} core skills ({', '.join(strengths[:3]) if strengths else 'none'})."
         return {
             "score": total_score,
             "reason": reason,

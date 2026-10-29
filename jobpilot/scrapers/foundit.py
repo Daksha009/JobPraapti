@@ -6,7 +6,7 @@ Scrapes job listings from foundit.in using Playwright.
 import logging
 import re
 from typing import List
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 from .base import BaseScraper
 from ..models import Job
@@ -22,9 +22,7 @@ class FounditScraper(BaseScraper):
 
     def _build_search_url(self, query: str = "", page: int = 1) -> str:
         """Build Foundit search URL with filters."""
-        base = self.platform_config.get(
-            "search_url", "https://www.foundit.in/srp/results"
-        )
+        base = self.platform_config.get("search_url", "https://www.foundit.in/search")
         roles = settings.search_queries
         locations = settings.user_locations
 
@@ -42,9 +40,15 @@ class FounditScraper(BaseScraper):
         if filters.get("job_freshness"):
             params["jobFreshness"] = filters["job_freshness"]
 
-        url = f"{base}?{urlencode(params)}"
-        if page > 1:
-            url += f"&page={page}"
+        # Current search uses a role slug and offsets, not the legacy /srp page.
+        if base.rstrip("/").endswith(("/search", "/srp/results")):
+            base = (
+                "https://www.foundit.in/search/"
+                + quote(re.sub(r"\s+", "-", search_query.strip().lower()), safe="-")
+                + "-jobs"
+            )
+        params.update(start=(page - 1) * 20 + 1, limit=20)
+        url = f"{base}?{urlencode(params, quote_via=quote)}"
         return url
 
     async def scrape_jobs(self) -> List[Job]:
@@ -76,7 +80,7 @@ class FounditScraper(BaseScraper):
                     # Wait for job cards
                     try:
                         await self.page.wait_for_selector(
-                            '[class*="jobCard"], [class*="card-apply-content"], '
+                            '.shadow-job-card:has(.jobCardTitle), [class*="card-apply-content"], '
                             '[class*="srpResultCardHeader"], .card-job-detail, '
                             "[data-job-id]",
                             timeout=15000,
@@ -91,7 +95,12 @@ class FounditScraper(BaseScraper):
                     if not page_jobs:
                         break
 
-                    jobs.extend(page_jobs)
+                    new_jobs = [
+                        j for j in page_jobs if j.url not in {x.url for x in jobs}
+                    ]
+                    if not new_jobs:
+                        break
+                    jobs.extend(new_jobs[: max_jobs - len(jobs)])
                     logger.info(
                         f"[foundit] '{role}' page {page_num}: "
                         f"found {len(page_jobs)} jobs (total: {len(jobs)})"
@@ -117,14 +126,7 @@ class FounditScraper(BaseScraper):
         """Dismiss cookie consent and notification banners."""
         try:
             for selector in [
-                'button:has-text("Accept")',
-                'button:has-text("Accept All")',
-                'button:has-text("Got it")',
-                'button:has-text("OK")',
-                '[id*="cookie"] button',
-                '[class*="cookie"] button',
-                'button[aria-label="Close"]',
-                ".notification-close",
+                "#onetrust-reject-all-handler",
             ]:
                 btn = await self.page.query_selector(selector)
                 if btn and await btn.is_visible():
@@ -139,6 +141,7 @@ class FounditScraper(BaseScraper):
 
         # Foundit uses various card structures — try multiple selectors
         card_selectors = [
+            ".shadow-job-card:has(.jobCardTitle)",
             '[class*="srpResultCardHeader"]',
             '[class*="jobCard"]',
             '[class*="card-apply-content"]',
@@ -171,7 +174,7 @@ class FounditScraper(BaseScraper):
         """Parse a Foundit job card into a Job object."""
         # Title
         title_el = await card.query_selector(
-            '[class*="jobTitle"], [class*="job-title"], '
+            '.jobCardTitle a, [class*="jobTitle"], [class*="job-title"], '
             '[class*="CardHeader"] a, h2 a, h3 a, a[title]'
         )
         title = ""
@@ -190,7 +193,7 @@ class FounditScraper(BaseScraper):
 
         # Company
         company_el = await card.query_selector(
-            '[class*="companyName"], [class*="company-name"], '
+            '.jobCardCompany, [class*="companyName"], [class*="company-name"], '
             '[class*="Company"], [class*="jobCompany"]'
         )
         company = (await company_el.inner_text()).strip() if company_el else "Unknown"
@@ -199,9 +202,6 @@ class FounditScraper(BaseScraper):
         link_el = await card.query_selector(
             'a[href*="/job/"], a[href*="/jobs/"], a[href*="job-detail"]'
         )
-        if not link_el:
-            link_el = await card.query_selector("a[href]")
-
         url = ""
         if link_el:
             href = await link_el.get_attribute("href")
@@ -209,6 +209,8 @@ class FounditScraper(BaseScraper):
                 url = (
                     href if href.startswith("http") else f"https://www.foundit.in{href}"
                 )
+        if not url:
+            return None
 
         # Location
         location_el = await card.query_selector(
@@ -218,7 +220,7 @@ class FounditScraper(BaseScraper):
 
         # Experience
         exp_el = await card.query_selector(
-            '[class*="experience"], [class*="Experience"], [class*="expText"]'
+            '.jobCardExperience, [class*="experience"], [class*="Experience"], [class*="expText"]'
         )
         experience = (await exp_el.inner_text()).strip() if exp_el else ""
 
@@ -237,6 +239,13 @@ class FounditScraper(BaseScraper):
             text = (await el.inner_text()).strip()
             if text and text not in skills and len(text) < 50:
                 skills.append(text)
+        if not skills:
+            # Current cards render skills beside a literal Skills: label.
+            skills = await card.evaluate("""el => {
+                const label = Array.from(el.querySelectorAll('p')).find(p => p.textContent.trim() === 'Skills:');
+                const row = label?.nextElementSibling?.querySelector('p');
+                return row ? Array.from(row.children).map(s => s.firstElementChild?.textContent.trim()).filter(Boolean) : [];
+            }""")
 
         # External ID from URL
         external_id = ""
@@ -281,10 +290,13 @@ class FounditScraper(BaseScraper):
                     if (seen.has(href)) continue;
                     seen.add(href);
                     
-                    // Walk up to find card container
+                    // Stop before a parent combines multiple job links.
                     let container = anchor;
-                    for (let i = 0; i < 6; i++) {
-                        if (container.parentElement) container = container.parentElement;
+                    for (let i = 0; i < 6 && container.parentElement; i++) {
+                        const parent = container.parentElement;
+                        const urls = new Set(Array.from(parent.querySelectorAll('a[href*="/job/"]')).map(a => a.href));
+                        if (urls.size > 1) break;
+                        container = parent;
                     }
                     
                     const text = container.innerText || '';

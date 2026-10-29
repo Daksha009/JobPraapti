@@ -39,7 +39,7 @@ A local-first, privacy-respecting automation workspace for job discovery, AI can
 - **Local Credential Storage**: Passwords and API keys are stored with Windows DPAPI encryption (`data/credentials.dpapi`). Resumes, session cookies, personal YAML profiles, and SQLite databases are excluded by `.gitignore`; audit tracked files and history before sharing.
 - **Native Chrome Session Reuse**: Connects to your installed Google Chrome via remote debugging. Uses your active, logged-in sessions without extracting cookies to plain disk or requesting your passwords.
 - **Dry-Run by Default**: Never submits an application unexpectedly. The `--live` flag and deliberate dashboard confirmation are strictly required to click final submit buttons.
-- **AI-Powered & Offline Matching**: Scores job descriptions against your resume using Gemini Flash with automatic fallback to deterministic role-keyword and skill-overlap scoring.
+- **AI-Powered & Offline Matching**: Scores job descriptions against your resume using Gemini Flash. If the configured model returns HTTP 503, it tries Gemini 2.5 Flash, then falls back to deterministic role-keyword and skill-overlap scoring if AI is unavailable.
 - **Human-in-the-Loop Review Queue**: Ambiguous questions, complex ATS redirects, and unexpected screening fields halt the application and route it to an explicit review queue instead of hallucinating answers.
 - **Concurrency & Quota Controls**: Enforces per-platform daily limits (resetting at 00:00 UTC) with file locks and atomic database claims. Uncertain attempts remain in Review to prevent automatic retries.
 
@@ -52,20 +52,20 @@ A local-first, privacy-respecting automation workspace for job discovery, AI can
 | **LinkedIn** | Keyword & location search, experience filters | Multi-step Easy Apply modal forms | Chrome session / Interactive | **Enabled** |
 | **Wellfound** | Role & location feed with pagination | Supported one-click application dialogs | Chrome session / Interactive | **Enabled** |
 | **Hirist** | Category browsing & search queries | Direct one-click application flows | Chrome session / Interactive | **Enabled** |
-| **Cutshort** | Search URLs & category scraping | Native candidate application workflows | Chrome session / Interactive | *Disabled (temporarily skipped)* |
+| **Cutshort** | Candidate feed with experience filters | Native candidate application workflows | Chrome session / Interactive | **Enabled** |
 | **Glassdoor** | Role & location search | Supported Easy Apply dialogs | Chrome session / Interactive | **Enabled** |
-| **Foundit** | Role queries, freshness & experience filters | Quick Apply dialogs | Chrome session / Interactive | *Disabled (toggle in config)* |
+| **Foundit** | Role queries, freshness & experience filters | Quick Apply dialogs | Chrome session / Interactive | **Enabled** |
 
-### Live validation status (27 October 2026)
+### Live validation status (29 October 2026)
 
 Adapter availability does not guarantee unattended submission for every employer form.
 
-- **Hirist:** nine real submissions confirmed, including five from the latest live pipeline.
-- **LinkedIn:** discovery and matching work. Regular-Chrome verification reached contact → profile-resume upload → screening → final review with no unresolved fields, after correcting nested button lookups and using user-confirmed numeric screening answers. The Submit control was verified without clicking it; no live submission confirmation was established.
-- **Wellfound:** discovery works; unavailable listings are recognized and employer-specific screening questions require saved answers.
-- **Glassdoor:** discovery works; sampled applications handed off to Indeed Smart Apply for manual completion.
-- **Cutshort:** the latest pipeline reported sign-in required; now disabled to honor the requested skip.
-- **Foundit:** disabled and not live-validated.
+- **Hirist:** real submissions confirmed.
+- **LinkedIn:** a real Easy Apply submission was confirmed by LinkedIn after the contact, resume, and screening steps.
+- **Wellfound:** a real submission was confirmed; unavailable listings and employer-specific screening questions may still need attention.
+- **Glassdoor:** an application through Indeed Smart Apply was confirmed. Another attempt lacks confirmation and remains in Review; verify it before retrying. Employer-site redirects and other form variants may need manual completion.
+- **Cutshort:** a submitted application produced an awaiting recruiter conversation for the selected job. Existing conversations and unsupported questions remain in Review.
+- **Foundit:** the site confirmed a native application for a tested job. Other jobs redirected to employer sites and require completion there; a Foundit redirect is not counted as a confirmed application.
 
 The minimum match score is configurable in My profile (`preferences.min_match_score`, 0–100). It is a relevance score, not a literal percentage of resume keywords. Lowering it broadens the candidate queue; it does not bypass required answers or confirm an application.
 
@@ -159,7 +159,7 @@ For written questions, enable **Prepare written answers using my resume and the 
 
 Open a job in Opportunities to view **Application answers**, inspect resume evidence, paste a manual screening question, or save a job-specific answer. Job-specific answers take priority over the general profile. Saving an answer does not resubmit the job. Verify uncertain submissions on the platform before shortlisting them again; use **Mark as applied** only after the platform confirms a manual completion.
 
-The worker leaves incomplete forms open in regular Chrome and pauses that platform when review is needed. Known Glassdoor redirects to Indeed Smart Apply have a dedicated handoff path; unsupported destinations and verification screens still require manual completion. Adapter fixtures passing does not establish live support for every employer's form.
+The worker leaves incomplete forms open in regular Chrome. It continues to other jobs for recognized, pre-submission missing-answer or unsupported-control cases; uncertain submissions and verification screens pause the platform to prevent duplicate applications. Known Glassdoor redirects to Indeed Smart Apply have a dedicated handoff path; unsupported destinations still require manual completion. Adapter fixtures passing does not establish live support for every employer's form.
 
 ### 2. Platform Overrides (`config/platforms.yaml`)
 

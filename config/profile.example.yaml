@@ -120,5 +120,9 @@ application_defaults:
   willing_to_relocate: true
   notice_period: "Immediate"     # Immediate | 15 days | 1 month | 2 months
   expected_ctc: "As per industry standards"
+  # Optional approved single-number expectation, in LPA, for CTC questions.
+  # expected_salary_single_lpa: 18
+  # Optional explicit permission for hybrid/on-site roles in India.
+  # willing_to_work_hybrid_or_onsite_india: true
   current_ctc: "N/A"
   years_of_experience: 0

@@ -4,6 +4,7 @@ Loads profile, platform configs, and environment variables.
 """
 
 import os
+import math
 import yaml
 from pathlib import Path
 from dotenv import load_dotenv
@@ -110,9 +111,19 @@ class Settings:
                 "compose_narrative_answers",
                 "visa_sponsorship_required",
                 "background_check_consent",
+                "willing_to_work_hybrid_or_onsite_india",
             ):
                 if key in defaults and type(defaults[key]) is not bool:
                     errors.append(f"application_defaults.{key} must be true or false")
+            single_salary = defaults.get("expected_salary_single_lpa")
+            if single_salary is not None and (
+                type(single_salary) not in (int, float)
+                or not math.isfinite(single_salary)
+                or single_salary < 0
+            ):
+                errors.append(
+                    "application_defaults.expected_salary_single_lpa must be a nonnegative number"
+                )
             authorization = defaults.get("work_authorization", {})
             if not isinstance(authorization, dict) or any(
                 not isinstance(country, str) or type(value) is not bool

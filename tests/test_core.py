@@ -170,3 +170,24 @@ def test_browser_profile_lock():
     with first._lock.acquire(timeout=0):
         with pytest.raises(Timeout):
             second._lock.acquire(timeout=0)
+
+
+def test_offline_matching_requires_actual_role_or_skill_overlap(profile):
+    from jobpilot.ai.matcher import JobMatcher
+
+    matcher = JobMatcher()
+    unrelated = Job(
+        title="Accountant",
+        company="Example",
+        platform="cutshort",
+        url="https://cutshort.io/job/1",
+    )
+    one_skill = Job(
+        title="Backend Developer",
+        company="Example",
+        platform="cutshort",
+        url="https://cutshort.io/job/2",
+        skills=["Python"],
+    )
+    assert matcher._rule_based_score(unrelated)["score"] == 0
+    assert matcher._rule_based_score(one_skill)["score"] == 10

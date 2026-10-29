@@ -382,6 +382,254 @@ async def test_review_stops_platform_and_keeps_form(database):
     assert adapter.apply_to_job.await_count == 1
 
 
+async def test_known_question_blocker_preserves_tab_and_continues_queue(page, database):
+    first = database.add_job(job(status="matched", match_score=90))
+    other = job(status="matched", match_score=80)
+    other.url = "https://www.linkedin.com/jobs/view/456/"
+    second = database.add_job(other)
+
+    async def route_response(route):
+        question = (
+            "Tax identification number" if "/123/" in route.request.url else "Email"
+        )
+        body = f"""<button aria-label="Easy Apply to this job" onclick="document.querySelector('dialog').showModal()">Easy Apply</button>
+        <dialog><label>{question}<input></label><button onclick="document.body.innerHTML='Application submitted successfully'">Submit application</button></dialog>"""
+        await route.fulfill(content_type="text/html", body=body)
+
+    await page.context.route("**/*", route_response)
+    adapter = get_applier("linkedin", database=database, dry_run=False)
+    adapter.page, adapter.context = page, page.context
+    adapter.session.page = page
+    adapter.start_browser = adapter.stop_browser = AsyncMock()
+    adapter.authenticate = AsyncMock(return_value=True)
+    result = await adapter.run()
+    assert result["review"] == 1 and result["applied"] == 1
+    assert result["processed"] == 2
+    assert database.get_job(first).status == "review"
+    assert database.get_job(second).status == "applied"
+    assert await page.get_by_label("Tax identification number").is_visible()
+    assert not page.is_closed() and adapter.session.keep_page
+
+
+async def test_wellfound_reads_bounded_description_before_composing(
+    page, profile, database, monkeypatch
+):
+    from jobpilot.applier import answers
+
+    profile["application_defaults"]["compose_narrative_answers"] = True
+    monkeypatch.setattr(
+        answers, "read_resume", lambda path: "• Built Python APIs with automated tests."
+    )
+    record = job(status="matched")
+    record.platform = "wellfound"
+    record.url = "https://wellfound.com/jobs/123-python-engineer"
+    record.description = ""
+    record.id = database.add_job(record)
+    description = "We build reliable Python APIs with automated tests. Join our team to develop and maintain backend services."
+    body = f"""<div class="styles_description__hash">{description}</div><p>Other job: unrelated Java skills</p>
+      <button onclick="document.querySelector('dialog').showModal()">Apply</button>
+      <dialog><label>What interests you about working for this company?<textarea></textarea></label><button onclick="document.body.innerHTML='Application submitted successfully'">Submit application</button></dialog>"""
+    await page.route(
+        "**/*", lambda route: route.fulfill(content_type="text/html", body=body)
+    )
+    adapter = get_applier("wellfound", database=database, dry_run=False)
+    adapter.page, adapter.context = page, page.context
+    assert (await adapter.apply_to_job(record)).status == "applied"
+    assert database.get_job(record.id).description == description
+    assert adapter.composer.record["entries"][0]["source"] == "resume_and_job"
+
+
+def test_profile_fact_variants_do_not_invent_positive_skill_experience(profile):
+    assert answer_for("First name*", profile) == "Test"
+    assert answer_for("Last name*", profile) == "Candidate"
+    assert (
+        answer_for("How many years of work experience do you have with Java?", profile)
+        == 0
+    )
+    profile["application_defaults"]["years_of_experience"] = 3
+    assert (
+        answer_for("How many years of work experience do you have with Java?", profile)
+        is None
+    )
+    profile["application_defaults"]["notice_period"] = "Immediate"
+    assert answer_for("Your Official Notice Period (In-Days)", profile) == 0
+    assert (
+        answer_for(
+            "Are you comfortable working in a hybrid setting from Pune?", profile
+        )
+        is None
+    )
+
+
+async def test_passive_recaptcha_badge_is_not_an_interactive_challenge(page):
+    await page.goto("https://smartapply.indeed.com/beta/indeedapply/form/review-module")
+    adapter = get_applier("glassdoor")
+    adapter.page = page
+    adapter._active_handoff = True
+    await page.set_content(
+        '<iframe src="https://www.recaptcha.net/recaptcha/enterprise/anchor?size=invisible"></iframe>'
+    )
+    assert await adapter.blocked() == ""
+    await page.set_content(
+        '<iframe src="https://www.recaptcha.net/recaptcha/enterprise/bframe?size=invisible"></iframe>'
+    )
+    assert "verification" in await adapter.blocked()
+    await page.set_content(
+        '<iframe src="https://www.recaptcha.net/recaptcha/enterprise/anchor?size=normal"></iframe>'
+    )
+    assert "verification" in await adapter.blocked()
+
+
+def test_explicit_salary_and_indian_workplace_preferences_are_scoped(profile):
+    defaults = profile["application_defaults"]
+    defaults["expected_salary_single_lpa"] = 18
+    defaults["willing_to_work_hybrid_or_onsite_india"] = True
+    assert answer_for("What is your expected CTC?", profile) == 18
+    assert answer_for("Expected salary in USD", profile) is None
+    question = "Are you comfortable working in a hybrid setting from Pune?(2 Days WFO & 3 Days WFH)"
+    assert (
+        answer_for(question, profile, job_location="Pune District, Maharashtra, India")
+        is True
+    )
+    assert answer_for(question, profile, job_location="London, United Kingdom") is None
+    assert (
+        answer_for(
+            "Are you currently based in Mumbai?", profile, job_location="Mumbai, India"
+        )
+        is None
+    )
+    assert (
+        answer_for(
+            "Are you comfortable working hybrid night shifts?",
+            profile,
+            job_location="India",
+        )
+        is None
+    )
+    assert answer_for(
+        "Are you comfortable working onsite weekends?", profile, job_location="India"
+    ) is None
+
+
+@pytest.mark.parametrize("invalid", [True, -1, float("inf"), "18"])
+def test_single_salary_requires_a_finite_nonnegative_number(profile, invalid):
+    profile["application_defaults"]["expected_salary_single_lpa"] = invalid
+    assert any("expected_salary_single_lpa" in error for error in settings.validate())
+
+
+async def test_indeed_resume_upload_is_verified_before_generic_filling(page, profile):
+    await page.set_content("""<main>
+      <div data-testid="resume-selection-file-resume-radio-card"><input type=radio checked data-testid="resume-selection-file-resume-radio-card-input"><span id=filename>old.pdf</span></div>
+      <input type=file data-testid="resume-selection-file-resume-radio-card-file-input" onchange="document.querySelector('#filename').textContent=this.files[0].name">
+      <button>Continue</button></main>""")
+    adapter = get_applier("glassdoor")
+    adapter.page = page
+    adapter._active_handoff = True
+    adapter.composer = composer(profile)
+    scope = await adapter.form_scope()
+    assert await adapter.prepare_form(scope) == ""
+    assert adapter.composer.record["resume_uploaded"] == settings.resume_path.name
+    assert not await fill_form(
+        scope,
+        profile,
+        settings.resume_path,
+        adapter.composer,
+        handled_selectors=adapter.handled_form_selectors,
+    )
+
+
+async def test_indeed_preview_checks_identity_and_resume(page, profile):
+    import html
+
+    preview = '<p data-testid="fullName">Test Candidate</p><p data-testid="email">candidate@test.invalid</p><p data-testid="phone">+910000000000</p><p data-testid="fileName">resume.pdf</p>'
+    await page.set_content(
+        f'<main><iframe data-testid="application-preview" srcdoc="{html.escape(preview, quote=True)}"></iframe><button data-testid="submit-application-button">Submit your application</button></main>'
+    )
+    adapter = get_applier("glassdoor")
+    adapter.page = page
+    adapter._active_handoff = True
+    adapter.composer = composer(profile)
+    adapter.composer.record["resume_uploaded"] = settings.resume_path.name
+    scope = await adapter.form_scope()
+    assert scope is not None
+    assert await adapter.prepare_form(scope) == ""
+    profile["personal"]["email"] = "different@test.invalid"
+    assert "email differs" in await adapter.prepare_form(scope)
+
+
+async def test_wellfound_confirmation_and_applied_badge_are_specific(page):
+    adapter = get_applier("wellfound")
+    adapter.page = page
+    await page.set_content(
+        "<nav>Applied</nav><p>We look forward to receiving your application!</p>"
+    )
+    assert await adapter.visible(adapter.success_selectors) is None
+    assert await adapter.visible(adapter.already_selectors) is None
+    await page.set_content(
+        "<p>SUCCESS! YOUR APPLICATION HAS BEEN SENT.</p><span>✓&nbsp; Applied</span>"
+    )
+    assert await adapter.visible(adapter.success_selectors) is not None
+    assert await adapter.visible(adapter.already_selectors) is not None
+
+
+async def test_preparation_can_replace_the_form_before_filling(page, database):
+    body = """<button aria-label="Easy Apply to this job" onclick="document.querySelector('dialog').showModal()">Easy Apply</button>
+      <dialog><section id=old>Choose resume<button>Continue</button></section></dialog>"""
+    await page.route(
+        "**/*", lambda route: route.fulfill(content_type="text/html", body=body)
+    )
+    adapter = get_applier("linkedin", database=database, dry_run=False)
+    adapter.page, adapter.context = page, page.context
+    adapter.form_selectors = ("#old", "#new")
+
+    async def prepare(scope):
+        await page.locator("dialog").evaluate(
+            "el => el.innerHTML = `<section id=new><label>Email<input></label><button onclick=\"if(document.querySelector('input').value)document.body.innerHTML='Application submitted successfully'\">Submit application</button></section>`"
+        )
+        return ""
+
+    adapter.prepare_form = prepare
+    assert (await adapter.apply_to_job(job())).status == "applied"
+
+
+async def test_linkedin_company_confirmation_and_existing_status(page):
+    adapter = get_applier("linkedin")
+    adapter.page = page
+    await page.set_content(
+        "<h2>\n    Your application was sent to Example!\n   </h2><p>Application submitted</p>"
+    )
+    assert await adapter.visible(adapter.success_selectors) is not None
+    assert await adapter.visible(adapter.already_selectors) is not None
+    await page.set_content("<p>Resume uploaded successfully</p>")
+    assert await adapter.visible(adapter.success_selectors) is None
+
+
+async def test_confirmation_can_arrive_after_submit_without_a_second_click(
+    page, database
+):
+    body = """<button aria-label="Easy Apply to this job" onclick="document.querySelector('dialog').showModal()">Easy Apply</button>
+      <dialog><button onclick="window.submits=(window.submits||0)+1;setTimeout(()=>{document.body.innerHTML='<h2>Your application was sent to Example!</h2>'},800)">Submit application</button></dialog>"""
+    await page.route(
+        "**/*", lambda route: route.fulfill(content_type="text/html", body=body)
+    )
+    adapter = get_applier("linkedin", database=database, dry_run=False)
+    adapter.page, adapter.context = page, page.context
+    assert (await adapter.apply_to_job(job())).status == "applied"
+    assert await page.evaluate("window.submits") == 1
+
+
+async def test_glassdoor_waits_for_hydration_and_rejects_only_optional_cookies(page):
+    await page.goto("https://smartapply.indeed.com/beta/indeedapply/form/review-module")
+    await page.set_content("""<button id=onetrust-reject-all-handler onclick="window.rejected=true;this.remove()">Reject All</button>
+      <script>setTimeout(()=>{document.body.insertAdjacentHTML('beforeend','<main><button data-testid="submit-application-button">Submit your application</button></main>')},500)</script>""")
+    adapter = get_applier("glassdoor")
+    adapter.page, adapter.context = page, page.context
+    adapter._active_handoff = True
+    await adapter.wait_for_application_surface()
+    assert await page.evaluate("window.rejected") is True
+    assert await adapter.form_scope() is not None
+
+
 def test_description_extraction_stops_before_recommendations():
     from jobpilot.applier.descriptions import description_from_text
 

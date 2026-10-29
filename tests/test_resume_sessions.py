@@ -232,3 +232,21 @@ def test_session_controls_validate_requests_and_refuse_changes_during_run(
     )
     assert client.post("/api/resume/extract", json={}, headers=auth).status_code == 400
     assert len(calls) == 1
+
+
+def test_session_preferences_retry_transient_windows_lock(monkeypatch):
+    from pathlib import Path
+
+    original = Path.replace
+    calls = []
+
+    def locked_once(path, target):
+        calls.append(target)
+        if len(calls) == 1:
+            raise PermissionError("Synthetic transient Windows sharing lock")
+        return original(path, target)
+
+    monkeypatch.setattr(Path, "replace", locked_once)
+    sessions.mark_signed_out("cutshort", True)
+    assert calls == [sessions.PREFERENCES, sessions.PREFERENCES]
+    assert "cutshort" in sessions.preferences()["signed_out"]

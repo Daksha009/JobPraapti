@@ -2,7 +2,7 @@
 
 platforms:
   cutshort:
-    enabled: false  # Temporarily skipped until the user reconnects this platform.
+    enabled: true
     daily_limit: 20  # Persistent application attempt quota per UTC day
     base_url: "https://cutshort.io"
     search_url: "https://cutshort.io/profile/all-jobs"
@@ -52,10 +52,10 @@ platforms:
       f_AL: true             # Easy Apply filter
 
   foundit:
-    enabled: false
+    enabled: true
     daily_limit: 20
     base_url: "https://www.foundit.in"
-    search_url: "https://www.foundit.in/srp/results"
+    search_url: "https://www.foundit.in/search"
     max_pages: 5
     max_jobs: 50
     delay_seconds: 3
